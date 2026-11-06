@@ -22,6 +22,8 @@ class ModelRecord:
     id: str
     loaded: bool | None
     kind: str = "any"
+    context: int | None = None
+    max_context: int | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,9 @@ class Inventory:
 
     def snapshots(self) -> dict[str, Snapshot]:
         return dict(self._snapshots)
+
+    async def remember(self, snapshot: Snapshot) -> None:
+        self._snapshots[snapshot.name] = snapshot
 
     async def refresh_all(self) -> None:
         for endpoint in self._endpoints:
@@ -136,7 +141,15 @@ def parse_openai_models(payload: object, loaded_default: bool | None) -> list[Mo
             loaded = False
         else:
             loaded = loaded_default
-        records.append(ModelRecord(id=str(item["id"]), loaded=loaded, kind=_openai_kind(item)))
+        records.append(
+            ModelRecord(
+                id=str(item["id"]),
+                loaded=loaded,
+                kind=_openai_kind(item),
+                context=_optional_int(item.get("context_length") or item.get("n_ctx") or item.get("max_context_length")),
+                max_context=_optional_int(item.get("max_context_length") or item.get("context_length") or item.get("n_ctx")),
+            )
+        )
     return records
 
 
@@ -154,7 +167,21 @@ def parse_lmstudio_models(payload: object) -> list[ModelRecord]:
             loaded = None
         else:
             loaded = False
-        records.append(ModelRecord(id=str(item["id"]), loaded=loaded, kind=_lmstudio_kind(item)))
+        max_context = _optional_int(item.get("max_context_length"))
+        loaded_context = _optional_int(item.get("loaded_context_length"))
+        if loaded is True and loaded_context is not None:
+            context = loaded_context
+        else:
+            context = max_context
+        records.append(
+            ModelRecord(
+                id=str(item["id"]),
+                loaded=loaded,
+                kind=_lmstudio_kind(item),
+                context=context,
+                max_context=max_context,
+            )
+        )
     return records
 
 
@@ -185,10 +212,24 @@ def merge_running(catalog: list[ModelRecord], states: dict[str, str]) -> list[Mo
         loaded = state.strip().lower() in READY_STATES
         previous = by_id.get(model_id)
         kind = previous.kind if previous else "any"
-        by_id[model_id] = ModelRecord(id=model_id, loaded=loaded, kind=kind)
+        context = previous.context if previous else None
+        max_context = previous.max_context if previous else None
+        by_id[model_id] = ModelRecord(
+            id=model_id,
+            loaded=loaded,
+            kind=kind,
+            context=context,
+            max_context=max_context,
+        )
     for model_id, record in list(by_id.items()):
         if model_id not in states and record.loaded is None:
-            by_id[model_id] = ModelRecord(id=model_id, loaded=False, kind=record.kind)
+            by_id[model_id] = ModelRecord(
+                id=model_id,
+                loaded=False,
+                kind=record.kind,
+                context=record.context,
+                max_context=record.max_context,
+            )
     return list(by_id.values())
 
 
@@ -212,6 +253,18 @@ def _lmstudio_kind(item: dict[str, object]) -> str:
     if model_type in {"llm", "vlm"}:
         return "chat"
     return "any"
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _short_error(exc: Exception) -> str:

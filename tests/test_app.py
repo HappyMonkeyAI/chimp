@@ -177,3 +177,61 @@ async def test_models_list_names_the_endpoint_that_owns_each_model(client):
     assert ("executor", "chimp", None) in owned
     assert ("coder", "warm", True) in owned
     assert ("coder", "cold", False) not in owned
+
+
+async def test_streamed_chunks_reach_the_client_intact():
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += await reader.read(4096)
+        head, _, rest = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+        while len(rest) < length:
+            rest += await reader.read(4096)
+        if head.startswith(b"GET"):
+            payload = b'{"object":"list","data":[{"id":"coder","loaded":true}]}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+        else:
+            body = b"data: hi\n\n"
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+            writer.write(f"{len(body):X}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    upstream = httpx.AsyncClient()
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("box", "openai", f"http://127.0.0.1:{port}", None, 1),),
+        aliases={"auto": AliasConfig("auto", ())},
+    )
+    app = build_app(settings, client=upstream)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+                async with api.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    json={"model": "auto", "stream": True, "messages": []},
+                ) as response:
+                    assert response.status_code == 200
+                    text = (await response.aread()).decode()
+        assert text == "data: hi\n\n"
+    finally:
+        server.close()
+        await server.wait_closed()
+        await upstream.aclose()

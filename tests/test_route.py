@@ -118,6 +118,74 @@ def test_unknown_loaded_state_beats_a_confirmed_cold_model():
     assert chosen.reason == "unknown"
 
 
+def test_a_loaded_window_that_cannot_hold_the_prompt_is_widened_in_place():
+    settings = _settings()
+    snapshots = {
+        "laptop": Snapshot(
+            "laptop",
+            True,
+            (ModelRecord("other", False, context=131072, max_context=131072),),
+            None,
+            0,
+        ),
+        "desktop": Snapshot(
+            "desktop",
+            True,
+            (ModelRecord("gemma", True, "chat", 8192, 131072),),
+            None,
+            0,
+        ),
+    }
+    chosen = place(settings, snapshots, {}, "auto", needed_tokens=20000)
+    assert chosen.endpoint.name == "desktop"
+    assert chosen.model_id == "gemma"
+    assert chosen.reason == "expand"
+    assert chosen.context_target == 32768
+
+
+def test_a_wider_loaded_instance_beats_expanding_the_small_one():
+    settings = _settings()
+    snapshots = {
+        "desktop": Snapshot(
+            "desktop",
+            True,
+            (
+                ModelRecord("google/gemma-4-e2b", True, "chat", 8192, 131072),
+                ModelRecord("google/gemma-4-e2b:2", True, "chat", 131072, 131072),
+            ),
+            None,
+            0,
+        ),
+    }
+    chosen = place(settings, snapshots, {}, "auto", needed_tokens=20000)
+    assert chosen.model_id == "google/gemma-4-e2b:2"
+    assert chosen.reason == "warm"
+
+
+def test_context_error_inside_a_stream_chunk_is_recognized():
+    from chimp.route import overflow_tokens
+
+    body = b'data: {"error":{"code":400,"message":"request (19305 tokens) exceeds the available context size (8192 tokens)","type":"exceed_context_size_error","n_prompt_tokens":19305,"n_ctx":8192}}\n\n'
+    assert overflow_tokens(body) == 21353
+
+
+def test_a_model_already_wide_enough_stays_warm():
+    settings = _settings()
+    snapshots = {
+        "laptop": Snapshot("laptop", True, (ModelRecord("other", False),), None, 0),
+        "desktop": Snapshot(
+            "desktop",
+            True,
+            (ModelRecord("gemma", True, "chat", 32768, 131072),),
+            None,
+            0,
+        ),
+    }
+    chosen = place(settings, snapshots, {}, "auto", needed_tokens=20000)
+    assert chosen.reason == "warm"
+    assert chosen.model_id == "gemma"
+
+
 def test_unreachable_fleet_is_503():
     settings = _settings()
     down = Snapshot("laptop", False, (), "connect", 0)

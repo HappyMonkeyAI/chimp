@@ -19,9 +19,18 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from chimp import __version__
-from chimp.config import Settings
+from chimp.config import EndpointConfig, Settings
 from chimp.inventory import Inventory, auth_headers
-from chimp.route import Placement, RouteError, place
+from chimp.route import (
+    ContextOverflow,
+    Placement,
+    RouteError,
+    base_model_id,
+    estimate_tokens,
+    overflow_tokens,
+    place,
+    target_context,
+)
 
 log = logging.getLogger("chimp")
 
@@ -60,6 +69,7 @@ class Gate:
         requested: str | None,
         purpose: str,
         exclude: frozenset[str] = frozenset(),
+        needed_tokens: int | None = None,
     ) -> Placement:
         async with self._lock:
             placement = place(
@@ -69,6 +79,7 @@ class Gate:
                 requested,
                 purpose=purpose,
                 exclude=exclude,
+                needed_tokens=needed_tokens,
             )
             name = placement.endpoint.name
             self.inflight[name] = self.inflight.get(name, 0) + 1
@@ -245,26 +256,57 @@ async def _proxy(request: Request) -> Response:
     inventory: Inventory = request.app.state.inventory
     gate: Gate = request.app.state.gate
     exclude: set[str] = set()
+    widened: set[str] = set()
     last_transport: Exception | None = None
+    needed = estimate_tokens(payload)
 
     while True:
         try:
-            placement = await gate.acquire(settings, inventory, requested_text, purpose, frozenset(exclude))
+            placement = await gate.acquire(
+                settings,
+                inventory,
+                requested_text,
+                purpose,
+                frozenset(exclude),
+                needed_tokens=needed,
+            )
         except RouteError as exc:
             if last_transport is not None:
                 return _error(502, "upstream_unavailable", f"Upstream connection failed: {last_transport}")
             return _error(exc.status, exc.code, exc.message)
-        payload["model"] = placement.model_id
+        model_id = placement.model_id
+        if placement.reason == "expand" and placement.context_target and placement.endpoint.name not in widened:
+            try:
+                model_id = await _widen_context(client, inventory, placement, placement.context_target)
+            except Exception as exc:
+                await gate.release(placement.endpoint.name)
+                exclude.add(placement.endpoint.name)
+                log.warning("could not widen context on %s: %s", placement.endpoint.name, exc)
+                continue
+            widened.add(placement.endpoint.name)
+        payload["model"] = model_id
+        if placement.endpoint.kind == "lmstudio":
+            try:
+                await _drop_smaller_siblings(client, inventory, placement.endpoint, model_id)
+            except Exception as exc:
+                log.warning("could not unload the smaller context on %s: %s", placement.endpoint.name, exc)
         _remember(request, placement)
         log.info(
-            "route %s -> %s model=%s reason=%s",
+            "route %s -> %s model=%s reason=%s tokens=%s",
             placement.requested,
             placement.endpoint.name,
-            placement.model_id,
+            model_id,
             placement.reason,
+            needed,
         )
         try:
             return await _dispatch(request, client, gate, placement, payload)
+        except ContextOverflow as overflow:
+            if await _retry_wider(client, inventory, placement, overflow.tokens, widened):
+                needed = max(needed, overflow.tokens)
+                continue
+            exclude.add(placement.endpoint.name)
+            log.warning("%s context still too small for %s tokens", placement.endpoint.name, overflow.tokens)
         except httpx.TransportError as exc:
             exclude.add(placement.endpoint.name)
             last_transport = exc
@@ -297,35 +339,175 @@ async def _dispatch(
         url = f"{url}?{request.url.query}"
     headers = _forward_headers(request, endpoint.api_key)
     stream = payload.get("stream") is True
+    stream_cm = client.stream("POST", url, headers=headers, json=payload)
     try:
-        opened = client.stream("POST", url, headers=headers, json=payload)
-        upstream = await opened.__aenter__()
+        upstream = await stream_cm.__aenter__()
     except Exception:
         await gate.release(endpoint.name)
         raise
 
-    response_headers = _response_headers(upstream, placement)
+    async def close_upstream() -> None:
+        try:
+            await stream_cm.__aexit__(None, None, None)
+        finally:
+            await gate.release(endpoint.name)
+
+    response_headers = _response_headers(upstream, placement, str(payload.get("model") or placement.model_id))
     if not stream or upstream.status_code >= 400:
         try:
             body = await upstream.aread()
         finally:
-            await upstream.aclose()
-            await gate.release(endpoint.name)
+            await close_upstream()
+        overflow = overflow_tokens(body)
+        if overflow is not None:
+            raise ContextOverflow(overflow)
         media = upstream.headers.get("content-type")
         return Response(body, status_code=upstream.status_code, headers=response_headers, media_type=media)
 
+    media = (upstream.headers.get("content-type") or "").lower()
+    if "event-stream" not in media:
+        try:
+            body = await upstream.aread()
+        finally:
+            await close_upstream()
+        overflow = overflow_tokens(body)
+        if overflow is not None:
+            raise ContextOverflow(overflow)
+        return Response(body, status_code=upstream.status_code, headers=response_headers, media_type=media or None)
+
+    if upstream.is_stream_consumed:
+        body = upstream.content
+        overflow = overflow_tokens(body)
+        if overflow is not None:
+            await close_upstream()
+            raise ContextOverflow(overflow)
+
+        async def replay():
+            try:
+                yield body
+            finally:
+                await close_upstream()
+
+        return StreamingResponse(replay(), status_code=upstream.status_code, headers=response_headers)
+
+    incoming = upstream.aiter_raw()
+    try:
+        first = await anext(incoming)
+    except StopAsyncIteration:
+        await close_upstream()
+        return Response(b"", status_code=upstream.status_code, headers=response_headers)
+    overflow = overflow_tokens(first)
+    if overflow is not None:
+        await close_upstream()
+        raise ContextOverflow(overflow)
+
     async def chunks():
         try:
-            if upstream.is_stream_consumed:
-                yield upstream.content
-            else:
-                async for chunk in upstream.aiter_raw():
-                    yield chunk
+            yield first
+            async for chunk in incoming:
+                yield chunk
         finally:
-            await upstream.aclose()
-            await gate.release(endpoint.name)
+            await close_upstream()
 
     return StreamingResponse(chunks(), status_code=upstream.status_code, headers=response_headers)
+
+
+async def _retry_wider(
+    client: httpx.AsyncClient,
+    inventory: Inventory,
+    placement: Placement,
+    tokens: int,
+    widened: set[str],
+) -> bool:
+    maximum = placement.max_context
+    if placement.endpoint.kind != "lmstudio" or placement.endpoint.name in widened:
+        return False
+    if maximum is None or tokens > maximum:
+        return False
+    try:
+        await _widen_context(client, inventory, placement, target_context(tokens, maximum))
+    except Exception as exc:
+        log.warning("could not widen context on %s: %s", placement.endpoint.name, exc)
+        return False
+    widened.add(placement.endpoint.name)
+    return True
+
+
+async def _widen_context(
+    client: httpx.AsyncClient,
+    inventory: Inventory,
+    placement: Placement,
+    target: int,
+) -> str:
+    endpoint = placement.endpoint
+    wanted = base_model_id(placement.model_id)
+    snapshot = inventory.snapshots().get(endpoint.name)
+    siblings = []
+    if snapshot is not None:
+        siblings = [
+            item
+            for item in snapshot.models
+            if item.loaded is True and base_model_id(item.id) == wanted
+        ]
+    ready = [item for item in siblings if item.context is not None and item.context >= target]
+    if ready:
+        chosen = max(ready, key=lambda item: item.context or 0)
+        for item in siblings:
+            if item.id != chosen.id and (item.context or 0) < target:
+                await _unload_instance(client, endpoint, item.id)
+        await inventory.remember(await inventory.probe(endpoint))
+        log.info("using %s %s at %s tokens", endpoint.name, chosen.id, chosen.context)
+        return chosen.id
+    for item in siblings:
+        await _unload_instance(client, endpoint, item.id)
+    response = await client.post(
+        f"{endpoint.base_url}/api/v1/models/load",
+        headers={**auth_headers(endpoint.api_key), "content-type": "application/json"},
+        json={"model": wanted, "context_length": target, "echo_load_config": True},
+        timeout=180,
+    )
+    response.raise_for_status()
+    body = response.json() if response.content else {}
+    instance = str(body.get("instance_id") or wanted)
+    log.info("widened %s %s to %s tokens", endpoint.name, instance, target)
+    await inventory.remember(await inventory.probe(endpoint))
+    return instance
+
+
+async def _drop_smaller_siblings(
+    client: httpx.AsyncClient,
+    inventory: Inventory,
+    endpoint: EndpointConfig,
+    chosen_id: str,
+) -> None:
+    snapshot = inventory.snapshots().get(endpoint.name)
+    if snapshot is None:
+        return
+    chosen = next((item for item in snapshot.models if item.id == chosen_id), None)
+    if chosen is None or chosen.context is None:
+        return
+    base = base_model_id(chosen_id)
+    changed = False
+    for item in snapshot.models:
+        smaller = item.loaded is True and item.id != chosen_id and base_model_id(item.id) == base
+        if smaller and item.context is not None and item.context < chosen.context:
+            await _unload_instance(client, endpoint, item.id)
+            changed = True
+    if changed:
+        await inventory.remember(await inventory.probe(endpoint))
+
+
+async def _unload_instance(client: httpx.AsyncClient, endpoint: EndpointConfig, instance_id: str) -> None:
+    response = await client.post(
+        f"{endpoint.base_url}/api/v1/models/unload",
+        headers={**auth_headers(endpoint.api_key), "content-type": "application/json"},
+        json={"instance_id": instance_id},
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        log.warning("unload %s on %s returned %s", instance_id, endpoint.name, response.status_code)
+        return
+    log.info("unloaded %s on %s", instance_id, endpoint.name)
 
 
 def _forward_headers(request: Request, api_key: str | None) -> dict[str, str]:
@@ -335,10 +517,10 @@ def _forward_headers(request: Request, api_key: str | None) -> dict[str, str]:
     return headers
 
 
-def _response_headers(upstream: httpx.Response, placement: Placement) -> dict[str, str]:
+def _response_headers(upstream: httpx.Response, placement: Placement, model_id: str) -> dict[str, str]:
     headers = {
         "x-chimp-endpoint": placement.endpoint.name,
-        "x-chimp-model": placement.model_id,
+        "x-chimp-model": model_id,
         "x-chimp-reason": placement.reason,
         "x-accel-buffering": "no",
     }

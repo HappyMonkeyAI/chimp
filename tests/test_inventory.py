@@ -19,8 +19,8 @@ def test_lmstudio_state_and_kind():
     records = parse_lmstudio_models(
         {
             "data": [
-                {"id": "coder", "state": "loaded", "type": "llm"},
-                {"id": "vision", "state": "not-loaded", "type": "vlm"},
+                {"id": "coder", "state": "loaded", "type": "llm", "loaded_context_length": 8192, "max_context_length": 131072},
+                {"id": "vision", "state": "not-loaded", "type": "vlm", "max_context_length": 262144},
                 {"id": "embed", "state": "loaded", "type": "embeddings"},
             ]
         }
@@ -30,6 +30,9 @@ def test_lmstudio_state_and_kind():
         ("vision", False, "chat"),
         ("embed", True, "embedding"),
     ]
+    assert records[0].context == 8192
+    assert records[0].max_context == 131072
+    assert records[1].context == 262144
 
 
 def test_llamaswap_running_list_marks_ready_models():

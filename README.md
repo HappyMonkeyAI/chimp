@@ -44,7 +44,7 @@ In each role, set the base URL to `http://127.0.0.1:8787/v1` and the model to th
 
 OpenBot's custom provider uses the same base URL. Find models lists `auto` even when a backend is down. Put `auto` in the model id: Chimp resolves it to a free endpoint whose chat model is already loaded. `executor`, `planner`, `reviewer`, and `triage` are listed the same way.
 
-A connection test that generates one token occupies a slot for that call and can cold-load a model if nothing matching is warm.
+A connection test that generates one token occupies a slot for that call. A prompt that does not fit the loaded context asks LM Studio to widen that model's window before answering, up to the model's maximum.
 
 ## Tests
 
