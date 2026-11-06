@@ -1,0 +1,139 @@
+from chimp.config import EndpointConfig, Settings
+from chimp.inventory import ModelRecord, Snapshot
+from chimp.route import RouteError, place
+
+
+def _settings() -> Settings:
+    laptop = EndpointConfig("laptop", "unsloth", "http://laptop", None, 1)
+    desktop = EndpointConfig("desktop", "lmstudio", "http://desktop", None, 1)
+    return Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=10,
+        request_timeout_seconds=30,
+        endpoints=(laptop, desktop),
+        aliases={
+            "executor": _alias("executor", ("qwen3-coder", "qwen3-32b")),
+            "auto": _alias("auto", ()),
+        },
+    )
+
+
+def _alias(name: str, models: tuple[str, ...]):
+    from chimp.config import AliasConfig
+
+    return AliasConfig(name, models)
+
+
+def _snap(name: str, models: list[tuple[str, bool | None]]) -> Snapshot:
+    return Snapshot(
+        name=name,
+        healthy=True,
+        models=tuple(ModelRecord(model_id, loaded) for model_id, loaded in models),
+        error=None,
+        checked_at=0,
+    )
+
+
+def test_warm_beats_a_higher_preference_that_is_cold():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("qwen3-32b", True)]),
+        "desktop": _snap("desktop", [("qwen3-coder", False), ("qwen3-32b", False)]),
+    }
+    chosen = place(settings, snapshots, {}, "executor")
+    assert chosen.endpoint.name == "laptop"
+    assert chosen.model_id == "qwen3-32b"
+    assert chosen.reason == "warm"
+
+
+def test_warm_preferred_model_wins_when_both_are_loaded():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("qwen3-32b", True)]),
+        "desktop": _snap("desktop", [("qwen3-coder", True)]),
+    }
+    chosen = place(settings, snapshots, {}, "executor")
+    assert chosen.endpoint.name == "desktop"
+    assert chosen.model_id == "qwen3-coder"
+    assert chosen.reason == "warm"
+
+
+def test_cold_load_when_nothing_warm_is_free():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("qwen3-coder", True)]),
+        "desktop": _snap("desktop", [("qwen3-coder", False)]),
+    }
+    chosen = place(settings, snapshots, {"laptop": 1}, "executor")
+    assert chosen.endpoint.name == "desktop"
+    assert chosen.reason == "cold"
+
+
+def test_busy_when_the_only_match_is_at_capacity():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("qwen3-coder", True)]),
+        "desktop": _snap("desktop", [("other", True)]),
+    }
+    try:
+        place(settings, snapshots, {"laptop": 1}, "executor")
+    except RouteError as exc:
+        assert exc.status == 429
+    else:
+        raise AssertionError("expected 429")
+
+
+def test_auto_uses_any_loaded_chat_model_and_skips_embeddings():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap_kinds("laptop", [("nomic-embed", True, "embedding"), ("chat-7b", True, "chat")]),
+        "desktop": _snap("desktop", []),
+    }
+    chosen = place(settings, snapshots, {}, "auto")
+    assert chosen.model_id == "chat-7b"
+    assert chosen.reason == "warm"
+
+
+def test_concrete_model_id_passes_through():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("gemma-3", True)]),
+        "desktop": _snap("desktop", [("gemma-3", False)]),
+    }
+    chosen = place(settings, snapshots, {}, "gemma-3")
+    assert chosen.endpoint.name == "laptop"
+    assert chosen.reason == "warm"
+
+
+def test_unknown_loaded_state_beats_a_confirmed_cold_model():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("qwen3-coder", None)]),
+        "desktop": _snap("desktop", [("qwen3-coder", False)]),
+    }
+    chosen = place(settings, snapshots, {}, "executor")
+    assert chosen.endpoint.name == "laptop"
+    assert chosen.reason == "unknown"
+
+
+def test_unreachable_fleet_is_503():
+    settings = _settings()
+    down = Snapshot("laptop", False, (), "connect", 0)
+    try:
+        place(settings, {"laptop": down, "desktop": down}, {}, "executor")
+    except RouteError as exc:
+        assert exc.status == 503
+    else:
+        raise AssertionError("expected 503")
+
+
+def _snap_kinds(name: str, models: list[tuple[str, bool | None, str]]) -> Snapshot:
+    return Snapshot(
+        name=name,
+        healthy=True,
+        models=tuple(ModelRecord(model_id, loaded, kind) for model_id, loaded, kind in models),
+        error=None,
+        checked_at=0,
+    )
