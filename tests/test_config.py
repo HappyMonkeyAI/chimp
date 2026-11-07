@@ -33,6 +33,7 @@ endpoints:
     assert settings.endpoints[0].api_key == "sk-test"
     assert settings.endpoints[0].max_concurrent == 2
     assert settings.aliases["executor"].models == ("coder",)
+    assert settings.affinity.score("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", "executor") >= 95
 
 
 def test_unknown_kind_is_rejected(tmp_path: Path):

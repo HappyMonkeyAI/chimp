@@ -6,8 +6,12 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from chimp.affinity import AffinityCatalog
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 KINDS = {"unsloth", "lmstudio", "llamaswap", "openai"}
@@ -41,6 +45,8 @@ class Settings:
     request_timeout_seconds: float
     endpoints: tuple[EndpointConfig, ...]
     aliases: dict[str, AliasConfig]
+    affinity: AffinityCatalog
+    huggingface_enrich: bool = False
 
 
 def expand_env(value: object) -> object:
@@ -81,6 +87,14 @@ def load_settings(path: Path) -> Settings:
         raise ConfigError("Endpoint names must be unique.")
     aliases = _parse_aliases(data.get("aliases") or {})
     api_key = _blank_to_none(data.get("api_key"))
+    huggingface_enrich = bool(data.get("huggingface_enrich") or False)
+    affinity_path = _optional_path(data.get("models_path"), path.parent)
+    from chimp.affinity import load_affinity
+
+    try:
+        affinity = load_affinity(affinity_path, huggingface_enrich=huggingface_enrich)
+    except Exception as exc:
+        raise ConfigError(f"Could not load models affinity map: {exc}") from exc
     return Settings(
         listen_host=host,
         listen_port=port,
@@ -89,6 +103,8 @@ def load_settings(path: Path) -> Settings:
         request_timeout_seconds=float(data.get("request_timeout_seconds") or 600),
         endpoints=endpoints,
         aliases=aliases,
+        affinity=affinity,
+        huggingface_enrich=huggingface_enrich,
     )
 
 
@@ -169,3 +185,13 @@ def _blank_to_none(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_path(value: object, base: Path) -> Path | None:
+    text = _blank_to_none(value)
+    if text is None:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = base / path
+    return path

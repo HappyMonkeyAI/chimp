@@ -1,0 +1,118 @@
+# Curated role affinities for known local models.
+# Higher score (0-100) = better fit. match is a case-insensitive substring of the model id.
+# Sources: vibes/SMALL-MODEL-TESTING.md, vibes-desktop role dogfood, live Unsloth catalogs.
+#
+# Roles: auto | planner | executor | reviewer | triage
+
+models:
+  - match: Qwen-AgentWorld
+    roles: { auto: 95, executor: 98, planner: 70, reviewer: 75, triage: 20 }
+    notes: "Vibes default/executor on laptop Unsloth; agent/world-model MoE."
+
+  - match: Defiant-Fable
+    roles: { auto: 80, executor: 85, planner: 55, reviewer: 60, triage: 25 }
+    notes: "9B dogfood executor with tight tool budget; reasoning_content quirks."
+
+  - match: Qwythos
+    roles: { auto: 82, executor: 88, planner: 60, reviewer: 65, triage: 25 }
+    notes: "Best 9B in vibes small-model tests; writes tests."
+
+  - match: qwen3.6-27b
+    roles: { auto: 92, executor: 96, planner: 90, reviewer: 92, triage: 15 }
+    notes: "Gold-standard executor in SMALL-MODEL-TESTING Test 31."
+
+  - match: Ternary-Bonsai-27B
+    roles: { auto: 70, executor: 72, planner: 55, reviewer: 55, triage: 15 }
+    notes: "Fast but stalls on long multi-task missions."
+
+  - match: gemma-4-12b
+    roles: { auto: 78, executor: 80, planner: 65, reviewer: 88, triage: 20 }
+    notes: "Gemma-4 QAT — first Gemma with reliable local tools; strong reviewer."
+
+  - match: gemma-4-e2b
+    roles: { auto: 45, executor: 35, planner: 40, reviewer: 50, triage: 70 }
+    notes: "Tiny desktop VLM; fine for short chat, weak as agent executor."
+
+  - match: gemma-4-E2B
+    roles: { auto: 45, executor: 35, planner: 40, reviewer: 50, triage: 70 }
+
+  - match: phi-4-mini
+    roles: { auto: 40, executor: 25, planner: 85, reviewer: 45, triage: 60 }
+    notes: "Excellent planner; hallucinates success as executor."
+
+  - match: phi-4-reasoning
+    roles: { auto: 75, executor: 70, planner: 80, reviewer: 78, triage: 20 }
+
+  - match: Qwen3.5-2b
+    roles: { auto: 25, executor: 10, planner: 30, reviewer: 20, triage: 90 }
+    notes: "Triage / observer class."
+
+  - match: Qwen3.5-4B-3D-Coder
+    roles: { auto: 70, executor: 78, planner: 55, reviewer: 50, triage: 30 }
+    notes: "Specialized 3D/coder slice."
+
+  - match: Kestrel-4B-Coder
+    roles: { auto: 65, executor: 72, planner: 50, reviewer: 45, triage: 35 }
+
+  - match: Qwopus3-5-9B-Coder
+    roles: { auto: 78, executor: 84, planner: 55, reviewer: 55, triage: 25 }
+
+  - match: Qwen3.8-9B
+    roles: { auto: 74, executor: 78, planner: 55, reviewer: 55, triage: 25 }
+
+  - match: Qwen3.5-4B-MTP
+    roles: { auto: 55, executor: 50, planner: 70, reviewer: 50, triage: 55 }
+
+  - match: MiniCPM-V
+    roles: { auto: 60, executor: 55, planner: 40, reviewer: 50, triage: 30 }
+    notes: "Vision-capable; not first pick for pure code agents."
+
+  - match: Devstral
+    roles: { auto: 85, executor: 90, planner: 60, reviewer: 70, triage: 20 }
+
+  - match: Qwen3-Coder
+    roles: { auto: 88, executor: 94, planner: 55, reviewer: 60, triage: 20 }
+
+  - match: Lyrics
+    roles: { auto: 0, executor: 0, planner: 0, reviewer: 0, triage: 0 }
+    notes: "Specialized generative; skip for agent roles."
+
+  - match: song-lyrics
+    roles: { auto: 0, executor: 0, planner: 0, reviewer: 0, triage: 0 }
+
+  - match: asr-streaming
+    roles: { auto: 0, executor: 0, planner: 0, reviewer: 0, triage: 0 }
+
+  - match: nemotron-3.5-asr
+    roles: { auto: 0, executor: 0, planner: 0, reviewer: 0, triage: 0 }
+
+# Heuristic bands when no curated match (params in billions). Soft defaults only.
+heuristics:
+  demote_substrings:
+    - lyrics
+    - song
+    - asr
+    - whisper
+    - embed
+    - embedding
+    - tts
+    - stt
+  boost_substrings:
+    coder: { auto: 15, executor: 25, planner: 5, reviewer: 5, triage: 0 }
+    code: { auto: 10, executor: 20, planner: 5, reviewer: 5, triage: 0 }
+    agent: { auto: 20, executor: 25, planner: 10, reviewer: 10, triage: 0 }
+    instruct: { auto: 5, executor: 5, planner: 5, reviewer: 5, triage: 0 }
+    reasoning: { auto: 10, executor: 5, planner: 20, reviewer: 15, triage: 0 }
+  by_params_b:
+    # [max_params_exclusive, role_scores]
+    - max: 4
+      roles: { auto: 30, executor: 15, planner: 45, reviewer: 25, triage: 85 }
+    - max: 8
+      roles: { auto: 55, executor: 50, planner: 65, reviewer: 55, triage: 55 }
+    - max: 15
+      roles: { auto: 75, executor: 80, planner: 60, reviewer: 65, triage: 30 }
+    - max: 40
+      roles: { auto: 85, executor: 90, planner: 70, reviewer: 75, triage: 20 }
+    - max: 1000
+      roles: { auto: 80, executor: 85, planner: 65, reviewer: 70, triage: 10 }
+  default_roles: { auto: 50, executor: 50, planner: 50, reviewer: 50, triage: 40 }

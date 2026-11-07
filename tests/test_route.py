@@ -1,3 +1,4 @@
+from chimp.affinity import load_affinity
 from chimp.config import EndpointConfig, Settings
 from chimp.inventory import ModelRecord, Snapshot
 from chimp.route import RouteError, place
@@ -17,6 +18,7 @@ def _settings() -> Settings:
             "executor": _alias("executor", ("qwen3-coder", "qwen3-32b")),
             "auto": _alias("auto", ()),
         },
+        affinity=load_affinity(huggingface_enrich=False),
     )
 
 
@@ -116,6 +118,44 @@ def test_unknown_loaded_state_beats_a_confirmed_cold_model():
     chosen = place(settings, snapshots, {}, "executor")
     assert chosen.endpoint.name == "laptop"
     assert chosen.reason == "unknown"
+
+
+def test_auto_prefers_agentworld_over_lyrics_when_both_are_cold():
+    settings = _settings()
+    snapshots = {
+        "laptop": Snapshot(
+            "laptop",
+            True,
+            (
+                ModelRecord("mradermacher/Lyrics_Qwen2.5-1.5B-Instruct-GGUF", False),
+                ModelRecord("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", False),
+            ),
+            None,
+            0,
+        ),
+    }
+    chosen = place(settings, snapshots, {}, "auto")
+    assert chosen.model_id == "unsloth/Qwen-AgentWorld-35B-A3B-GGUF"
+    assert chosen.reason == "cold"
+
+
+def test_auto_skips_a_warm_lyrics_model_for_an_agent_fit():
+    settings = _settings()
+    snapshots = {
+        "laptop": Snapshot(
+            "laptop",
+            True,
+            (
+                ModelRecord("mradermacher/Lyrics_Qwen2.5-1.5B-Instruct-GGUF", True),
+                ModelRecord("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", False),
+            ),
+            None,
+            0,
+        ),
+    }
+    chosen = place(settings, snapshots, {}, "auto")
+    assert chosen.model_id == "unsloth/Qwen-AgentWorld-35B-A3B-GGUF"
+    assert chosen.reason == "cold"
 
 
 def test_a_loaded_window_that_cannot_hold_the_prompt_is_widened_in_place():

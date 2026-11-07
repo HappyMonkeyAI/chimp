@@ -21,11 +21,13 @@ Check placement with `GET /status`. `GET /health` stays open even when an API ke
 The `model` field is either a role alias (`executor`, `planner`, …) or a real model id. `auto` means any chat model. `X-Chimp-Role` is used only when `model` is omitted or `auto`.
 
 1. Use a free endpoint where a matching model is already loaded.
-2. If loaded state is unknown (a plain OpenAI endpoint), use a free endpoint that lists the model.
-3. Load a matching model on a free endpoint only when nothing suitable is already warm.
-4. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
+2. If the loaded window is too small on LM Studio, widen that instance before answering.
+3. If loaded state is unknown (a plain OpenAI endpoint), use a free endpoint that lists the model.
+4. Load a matching model on a free endpoint only when nothing suitable is already warm.
+5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub.
+6. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
 
-Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `unknown`, or `cold`) say where it went. The JSON body is streamed through unchanged.
+Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, or `cold`) say where it went. The JSON body is streamed through unchanged.
 
 ## Endpoints
 
@@ -54,4 +56,4 @@ A connection test that generates one token occupies a slot for that call. A prom
 
 ## Later
 
-`GET /status` is the data a web dashboard would show. A desktop app can wait until that view has something to operate. Task text and system prompts are not classified yet: the role alias is the signal.
+`GET /status` is the data a web dashboard would show. A desktop app can wait until that view has something to operate. Role aliases plus the affinity map choose among legal models; System One can later break ties among those candidates.

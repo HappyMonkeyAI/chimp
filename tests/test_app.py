@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from chimp.affinity import load_affinity
 from chimp.app import build_app
 from chimp.config import AliasConfig, EndpointConfig, Settings
 
@@ -23,6 +24,7 @@ def _settings() -> Settings:
             "executor": AliasConfig("executor", ("coder",)),
             "auto": AliasConfig("auto", ()),
         },
+        affinity=load_affinity(huggingface_enrich=False),
     )
 
 
@@ -138,6 +140,7 @@ async def test_a_failed_connection_frees_only_its_own_slot():
             settings.endpoints[1],
         ),
         aliases=settings.aliases,
+        affinity=settings.affinity,
     )
     app = build_app(settings, client=upstream)
     async with app.router.lifespan_context(app):
@@ -218,6 +221,7 @@ async def test_streamed_chunks_reach_the_client_intact():
         request_timeout_seconds=30,
         endpoints=(EndpointConfig("box", "openai", f"http://127.0.0.1:{port}", None, 1),),
         aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
     )
     app = build_app(settings, client=upstream)
     try:

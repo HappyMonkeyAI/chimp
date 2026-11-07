@@ -91,6 +91,8 @@ def place(
             continue
         saw_model = True
         for choice in choices:
+            if not preferred and settings.affinity.score(choice.id, label) <= 0:
+                continue
             reason = _fit(endpoint, choice, needed_tokens)
             if reason is None:
                 continue
@@ -125,7 +127,7 @@ def place(
             )
         raise RouteError(404, "model_not_found", f"No reachable endpoint has a model for {label!r}.")
 
-    endpoint, record, _active, _reason = min(pool, key=lambda item: _rank(item, preferred))
+    endpoint, record, _active, _reason = min(pool, key=lambda item: _rank(item, preferred, label, settings))
     target = None
     if chosen_reason == "expand" and needed_tokens is not None and record.max_context is not None:
         target = target_context(needed_tokens, record.max_context)
@@ -195,10 +197,17 @@ def _lookup(models: list[ModelRecord], model_id: str) -> ModelRecord | None:
     return None
 
 
-def _rank(item: tuple[EndpointConfig, ModelRecord, int, str], preferred: tuple[str, ...]) -> tuple[int, int, str]:
+def _rank(
+    item: tuple[EndpointConfig, ModelRecord, int, str],
+    preferred: tuple[str, ...],
+    role: str,
+    settings: Settings,
+) -> tuple[int, int, int, str]:
     _endpoint, record, active, _reason = item
     preference = _preference_index(record.id, preferred)
-    return (preference, active, _endpoint.name)
+    # Higher affinity wins: negate so min() keeps warm/busy order primary.
+    affinity = -settings.affinity.score(record.id, role)
+    return (preference, affinity, active, _endpoint.name)
 
 
 def estimate_tokens(payload: dict[str, object]) -> int:

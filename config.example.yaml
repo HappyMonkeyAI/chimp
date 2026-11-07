@@ -6,6 +6,10 @@ listen: 127.0.0.1:8787
 api_key: ${CHIMP_API_KEY:-}
 poll_interval_seconds: 10
 request_timeout_seconds: 600
+# Optional path to a role-affinity map (defaults to the packaged models.yaml).
+# models_path: models.yaml
+# Optional: fetch Hugging Face tags/params for unknown model ids (cached).
+huggingface_enrich: false
 
 # Role names Vibes (or any client) can send in the "model" field.
 # models: preference order. The router still prefers a free endpoint that
@@ -30,16 +34,22 @@ aliases:
       - qwen3-4b
       - qwen3-32b
 endpoints:
-  - name: remote-unsloth
+  - name: laptop-unsloth
     kind: unsloth
-    base_url: https://your-tunnel.trycloudflare.com
-    api_key: ${UNSLOTH_API_KEY:-}
+    base_url: http://192.168.5.157:8888
+    api_key: ${LAPTOP_UNSLOTH_API_KEY:-}
     max_concurrent: 1
 
   - name: desktop-lmstudio
     kind: lmstudio
     base_url: http://127.0.0.1:1234
     api_key: ${LMSTUDIO_API_KEY:-}
+    max_concurrent: 1
+
+  - name: remote-unsloth
+    kind: unsloth
+    base_url: https://your-tunnel.trycloudflare.com
+    api_key: ${REMOTE_UNSLOTH_API_KEY:-}
     max_concurrent: 1
 
   # kind: llamaswap uses GET /v1/models and GET /running.
