@@ -2,7 +2,7 @@
 # Install chimp (local OpenAI-compatible VRAM-sticky router).
 #
 # One-liner:
-#   curl -fsSL https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/HappyMonkeyAI/chimp/main/install.sh | bash
 #
 # From a clone:
 #   ./install.sh
@@ -13,7 +13,7 @@
 #   CHIMP_REPO, CHIMP_REF
 set -euo pipefail
 
-REPO_URL="${CHIMP_REPO:-https://github.com/SPhillips1337/chimp.git}"
+REPO_URL="${CHIMP_REPO:-https://github.com/HappyMonkeyAI/chimp.git}"
 REF="${CHIMP_REF:-main}"
 WANT_DEV=0
 DIR_OVERRIDE=""
@@ -117,7 +117,7 @@ sync_repo() {
   step "git not found; downloading zipball"
   command -v curl >/dev/null 2>&1 || fail "Need git or curl to fetch the repo"
   command -v unzip >/dev/null 2>&1 || fail "Need unzip to extract the zipball"
-  local owner=SPhillips1337 name=chimp
+  local owner=HappyMonkeyAI name=chimp
   if [[ "$REPO_URL" =~ github.com[:/]([^/]+)/([^/.]+) ]]; then
     owner="${BASH_REMATCH[1]}"
     name="${BASH_REMATCH[2]}"

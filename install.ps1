@@ -1,11 +1,11 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Install chimp (local OpenAI-compatible VRAM-sticky router).
 
 .DESCRIPTION
   One-liner:
-    irm https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/HappyMonkeyAI/chimp/main/install.ps1 | iex
 
   From a clone:
     .\install.ps1
@@ -27,7 +27,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$RepoUrl = if ($env:CHIMP_REPO) { $env:CHIMP_REPO } else { "https://github.com/SPhillips1337/chimp.git" }
+$RepoUrl = if ($env:CHIMP_REPO) { $env:CHIMP_REPO } else { "https://github.com/HappyMonkeyAI/chimp.git" }
 $Ref = if ($env:CHIMP_REF) { $env:CHIMP_REF } else { "main" }
 $WantDev = $Dev -or ($env:CHIMP_DEV -eq "1")
 
@@ -112,7 +112,7 @@ function Sync-Repo([string]$Root) {
     }
 
     Write-Step "git not found; downloading zipball"
-    $owner = "SPhillips1337"
+    $owner = "HappyMonkeyAI"
     $name = "chimp"
     if ($RepoUrl -match 'github\.com[:/]([^/]+)/([^/.]+)') {
         $owner = $Matches[1]
@@ -225,3 +225,4 @@ try {
     Write-Fail $_.Exception.Message
     exit 1
 }
+

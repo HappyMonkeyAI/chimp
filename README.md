@@ -1,4 +1,4 @@
-# chimp
+﻿# chimp
 
 A local OpenAI-compatible proxy for the machines you already run. Point Vibes, OpenBot, or any other client at one URL. Chimp watches each endpoint, counts in-flight streams, and sends the request to a free machine that already has a suitable model loaded.
 
@@ -9,13 +9,13 @@ The installers check for Python 3.11+, create a venv, install the package, copy 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/HappyMonkeyAI/chimp/main/install.ps1 | iex
 ```
 
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/HappyMonkeyAI/chimp/main/install.sh | bash
 ```
 
 Defaults to `%USERPROFILE%\chimp` or `~/chimp`. Override with `-Dir C:\path` / `--dir /path`, or `CHIMP_HOME`. Pass `-Dev` / `--dev` (or `CHIMP_DEV=1`) to include pytest. If you already cloned the repo, run `.\install.ps1` or `./install.sh` from that directory instead.
@@ -110,3 +110,4 @@ Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/Agent
 | [`docs/adr/`](docs/adr/) | Project ADRs |
 
 `GET /status` is the data a web dashboard or desktop app would show; see roadmap before building UI on top.
+
