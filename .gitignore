@@ -12,5 +12,8 @@ config.local.yaml
 .env
 .env.*
 
+# Machine-local MCP overlay (see MCP.local.md.example)
+MCP.local.md
+
 # Spine / agent session notes stay on this machine
 .agent/

@@ -2,14 +2,52 @@
 
 A local OpenAI-compatible proxy for the machines you already run. Point Vibes, OpenBot, or any other client at one URL. Chimp watches each endpoint, counts in-flight streams, and sends the request to a free machine that already has a suitable model loaded.
 
-## Run
+## Install
+
+The installers check for Python 3.11+, create a venv, install the package, copy `config.example.yaml` → `config.yaml` when missing, and verify imports plus a config load.
+
+**Windows (PowerShell):**
 
 ```powershell
+irm https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.ps1 | iex
+```
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SPhillips1337/chimp/main/install.sh | bash
+```
+
+Defaults to `%USERPROFILE%\chimp` or `~/chimp`. Override with `-Dir C:\path` / `--dir /path`, or `CHIMP_HOME`. Pass `-Dev` / `--dev` (or `CHIMP_DEV=1`) to include pytest. If you already cloned the repo, run `.\install.ps1` or `./install.sh` from that directory instead.
+
+Then edit `config.yaml` and start:
+
+```powershell
+# Windows
+~\chimp\.venv\Scripts\chimp
+```
+
+```bash
+# Linux / macOS
+~/chimp/.venv/bin/chimp
+```
+
+### Manual install
+
+```powershell
+# Windows
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 copy config.example.yaml config.yaml
-# edit config.yaml, then:
 .venv\Scripts\chimp
+```
+
+```bash
+# Linux / macOS
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+cp config.example.yaml config.yaml
+.venv/bin/chimp
 ```
 
 `config.yaml` is gitignored — keep your real LAN URLs and keys there (or point `CHIMP_CONFIG` at another path). Only `config.example.yaml` is meant for the public repo. Set `CHIMP_API_KEY` when the listen address is reachable beyond localhost.
@@ -55,6 +93,20 @@ A connection test that generates one token occupies a slot for that call. A prom
 .venv\Scripts\python -m pytest
 ```
 
-## Later
+## Docs (Agents Protocol)
 
-`GET /status` is the data a web dashboard would show. A desktop app can wait until that view has something to operate. Role aliases plus the affinity map choose among legal models; System One can later break ties among those candidates.
+Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/AgentsProtocol); Spine warm-start via `.cursor/hooks.json`.
+
+| File | Role |
+|------|------|
+| [`AGENTS.md`](AGENTS.md) | Agent law stub + Spine session start/end |
+| [`CONTEXT.md`](CONTEXT.md) | Stack, rules, what not to do |
+| [`MCP.md`](MCP.md) | Intent → MCP routing |
+| [`SPEC.md`](SPEC.md) | Acceptance criteria |
+| [`PLAN.md`](PLAN.md) | Architecture / phases |
+| [`TASKS.md`](TASKS.md) | Task board |
+| [`ROADMAP.md`](ROADMAP.md) | Future ideas (Electron desktop, sticky cache, …) |
+| [`LINKS.md`](LINKS.md) | External research links |
+| [`docs/adr/`](docs/adr/) | Project ADRs |
+
+`GET /status` is the data a web dashboard or desktop app would show; see roadmap before building UI on top.

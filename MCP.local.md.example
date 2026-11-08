@@ -1,0 +1,27 @@
+# MCP.local.md.example — machine overlay
+
+Copy to `MCP.local.md` (gitignored). No secrets.
+
+```markdown
+# MCP.local.md
+
+- Last discovery: YYYY-MM-DD
+- Project path: C:\Users\steph\Documents\development\chimp
+
+## Mounted / confirmed
+- spine
+- resource_sentinel
+- agent_communication
+- browseros-neo
+- neo4j-semantic-search
+
+## Wanted but missing
+- (none yet)
+
+## LAN / endpoints (no keys)
+- chimp listen: 127.0.0.1:8787
+- (add Unsloth / LM Studio hosts used on this machine)
+
+## Activate notes
+- Spine registry name optional; absolute path always works
+```
