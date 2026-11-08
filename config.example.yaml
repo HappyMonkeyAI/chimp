@@ -36,7 +36,7 @@ aliases:
 endpoints:
   - name: laptop-unsloth
     kind: unsloth
-    base_url: http://192.168.5.157:8888
+    base_url: http://192.168.1.50:8888
     api_key: ${LAPTOP_UNSLOTH_API_KEY:-}
     max_concurrent: 1
 
@@ -48,9 +48,39 @@ endpoints:
 
   - name: remote-unsloth
     kind: unsloth
-    base_url: https://your-tunnel.trycloudflare.com
+    base_url: https://your-tunnel.example
     api_key: ${REMOTE_UNSLOTH_API_KEY:-}
     max_concurrent: 1
+
+  # Secondary cloud free tiers (from local-ai-planner providers allowlist).
+  # Used only when no primary endpoint can take the request.
+  - name: groq
+    kind: openai
+    tier: secondary
+    base_url: https://api.groq.com/openai/v1
+    api_key: ${GROQ_API_KEY:-}
+    max_concurrent: 2
+
+  - name: mistral
+    kind: openai
+    tier: secondary
+    base_url: https://api.mistral.ai/v1
+    api_key: ${MISTRAL_API_KEY:-}
+    max_concurrent: 2
+
+  - name: llm7
+    kind: openai
+    tier: secondary
+    base_url: https://api.llm7.io/v1
+    api_key: ${LLM7_API_KEY:-}
+    max_concurrent: 2
+
+  # GitHub Models uses /chat/completions (no /v1); needs a path adapter before enabling.
+  # - name: github-models
+  #   kind: openai
+  #   tier: secondary
+  #   base_url: https://models.github.ai/inference
+  #   api_key: ${GITHUB_TOKEN:-}
 
   # kind: llamaswap uses GET /v1/models and GET /running.
   # kind: openai uses GET /v1/models only, so loaded state stays unknown.

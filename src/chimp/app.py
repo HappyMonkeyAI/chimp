@@ -173,6 +173,7 @@ async def _status(request: Request) -> Response:
             {
                 "name": endpoint.name,
                 "kind": endpoint.kind,
+                "tier": endpoint.tier,
                 "base_url": endpoint.base_url,
                 "max_concurrent": endpoint.max_concurrent,
                 "inflight": gate.inflight.get(endpoint.name, 0),

@@ -120,6 +120,43 @@ def test_unknown_loaded_state_beats_a_confirmed_cold_model():
     assert chosen.reason == "unknown"
 
 
+def test_secondary_cloud_is_used_only_when_primary_cannot_serve():
+    from chimp.affinity import load_affinity
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=10,
+        request_timeout_seconds=30,
+        endpoints=(
+            EndpointConfig("laptop", "unsloth", "http://laptop", None, 1, "primary"),
+            EndpointConfig("groq", "openai", "http://groq", None, 2, "secondary"),
+        ),
+        aliases={"auto": _alias("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+    )
+    # Primary down, secondary healthy with a chat model.
+    snapshots = {
+        "laptop": Snapshot("laptop", False, (), "down", 0),
+        "groq": Snapshot("groq", True, (ModelRecord("llama-3.1-8b-instant", None),), None, 0),
+    }
+    chosen = place(settings, snapshots, {}, "auto")
+    assert chosen.endpoint.name == "groq"
+    assert chosen.model_id == "llama-3.1-8b-instant"
+
+    # Primary healthy again: keep the request on the LAN GPU.
+    snapshots["laptop"] = Snapshot(
+        "laptop",
+        True,
+        (ModelRecord("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", True),),
+        None,
+        0,
+    )
+    chosen = place(settings, snapshots, {}, "auto")
+    assert chosen.endpoint.name == "laptop"
+
+
 def test_auto_prefers_agentworld_over_lyrics_when_both_are_cold():
     settings = _settings()
     snapshots = {

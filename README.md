@@ -12,7 +12,7 @@ copy config.example.yaml config.yaml
 .venv\Scripts\chimp
 ```
 
-`config.yaml` stays on this machine. `CHIMP_CONFIG` selects a different path. Set `CHIMP_API_KEY` when the listen address is reachable beyond localhost.
+`config.yaml` is gitignored — keep your real LAN URLs and keys there (or point `CHIMP_CONFIG` at another path). Only `config.example.yaml` is meant for the public repo. Set `CHIMP_API_KEY` when the listen address is reachable beyond localhost.
 
 Check placement with `GET /status`. `GET /health` stays open even when an API key is set, so a process monitor can probe it.
 
@@ -26,6 +26,7 @@ The `model` field is either a role alias (`executor`, `planner`, …) or a real 
 4. Load a matching model on a free endpoint only when nothing suitable is already warm.
 5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub.
 6. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
+7. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request.
 
 Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, or `cold`) say where it went. The JSON body is streamed through unchanged.
 

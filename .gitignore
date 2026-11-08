@@ -5,4 +5,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Local machine config (copy from config.example.yaml)
 config.yaml
+config.local.yaml
+.env
+.env.*
+
+# Spine / agent session notes stay on this machine
+.agent/

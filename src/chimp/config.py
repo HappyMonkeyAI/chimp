@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 KINDS = {"unsloth", "lmstudio", "llamaswap", "openai"}
+TIERS = {"primary", "secondary"}
 
 
 class ConfigError(ValueError):
@@ -28,6 +29,7 @@ class EndpointConfig:
     base_url: str
     api_key: str | None
     max_concurrent: int = 1
+    tier: str = "primary"
 
 
 @dataclass(frozen=True)
@@ -137,12 +139,16 @@ def _parse_endpoint(item: object) -> EndpointConfig:
     max_concurrent = int(item.get("max_concurrent") or 1)
     if max_concurrent < 1:
         raise ConfigError(f"Endpoint {name!r} max_concurrent must be at least 1.")
+    tier = str(item.get("tier") or "primary").strip().lower()
+    if tier not in TIERS:
+        raise ConfigError(f"Endpoint {name!r} tier must be one of {sorted(TIERS)}.")
     return EndpointConfig(
         name=name,
         kind=kind,
         base_url=base_url,
         api_key=_blank_to_none(item.get("api_key")),
         max_concurrent=max_concurrent,
+        tier=tier,
     )
 
 

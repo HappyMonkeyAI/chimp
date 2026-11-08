@@ -105,10 +105,14 @@ def place(
         raise RouteError(503, "no_endpoints", "No configured endpoint is reachable.")
 
     order = ("warm", "expand", "unknown", "cold")
+    primary_free = [item for item in free if item[0].tier == "primary"]
+    secondary_free = [item for item in free if item[0].tier == "secondary"]
+    # Cloud/free APIs are last resort: only when no primary can take the request.
+    candidates = primary_free or secondary_free
     pool: list[tuple[EndpointConfig, ModelRecord, int, str]] = []
     chosen_reason = ""
     for reason in order:
-        pool = [item for item in free if item[3] == reason]
+        pool = [item for item in candidates if item[3] == reason]
         if pool:
             chosen_reason = reason
             break
@@ -202,12 +206,14 @@ def _rank(
     preferred: tuple[str, ...],
     role: str,
     settings: Settings,
-) -> tuple[int, int, int, str]:
+) -> tuple[int, int, int, int, str]:
     _endpoint, record, active, _reason = item
     preference = _preference_index(record.id, preferred)
     # Higher affinity wins: negate so min() keeps warm/busy order primary.
     affinity = -settings.affinity.score(record.id, role)
-    return (preference, affinity, active, _endpoint.name)
+    # Prefer primary over secondary when both somehow share a pool.
+    tier_rank = 0 if _endpoint.tier == "primary" else 1
+    return (preference, affinity, tier_rank, active, _endpoint.name)
 
 
 def estimate_tokens(payload: dict[str, object]) -> int:
