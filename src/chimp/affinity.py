@@ -10,9 +10,10 @@ from pathlib import Path
 import httpx
 import yaml
 
+from chimp.roles import ROLES, normalize_role
+
 log = logging.getLogger("chimp.affinity")
 
-ROLES = ("auto", "planner", "executor", "reviewer", "triage")
 _PARAM_RE = re.compile(
     r"(?P<n>\d+(?:\.\d+)?)\s*[bB](?:illion)?|(?P<m>\d+(?:\.\d+)?)\s*[mM](?:illion)?"
 )
@@ -25,9 +26,20 @@ class RoleScores:
     executor: int = 50
     reviewer: int = 50
     triage: int = 40
+    coder: int = 50
+    ops: int = 50
+    research: int = 50
+    writer: int = 50
+    design: int = 50
+    qa: int = 50
+    docs: int = 50
+    skills: int = 50
+    assistant: int = 50
+    coord: int = 50
 
     def get(self, role: str) -> int:
-        return int(getattr(self, _normalize_role(role), self.auto))
+        key = normalize_role(role)
+        return int(getattr(self, key, self.auto))
 
 
 @dataclass(frozen=True)
@@ -54,9 +66,19 @@ class AffinityCatalog:
     default_roles: RoleScores
     huggingface_enrich: bool = False
     _hf_cache: dict[str, ModelHints | None] = field(default_factory=dict, repr=False)
+    _live_scores: dict[str, dict[str, int]] = field(default_factory=dict, repr=False)
+
+    def seed_live(self, model_ids: list[str], roles: tuple[str, ...] = ("auto", "coder", "research")) -> dict[str, dict[str, int]]:
+        """Score live inventory ids (warms HF cache when enrich is on). Returns role→score map."""
+        report: dict[str, dict[str, int]] = {}
+        for model_id in model_ids:
+            per_role = {role: self.score(model_id, role) for role in roles}
+            self._live_scores[model_id] = per_role
+            report[model_id] = per_role
+        return report
 
     def score(self, model_id: str, role: str, hints: ModelHints | None = None) -> int:
-        role = _normalize_role(role)
+        role = normalize_role(role)
         folded = model_id.casefold()
         for entry in self.curated:
             if entry.match.casefold() in folded:
@@ -79,10 +101,18 @@ class AffinityCatalog:
         for tag in effective.tags:
             low = tag.casefold()
             if low in {"agent", "tool_use", "tools", "code", "coder", "conversational"}:
-                if role in {"auto", "executor"}:
+                if role in {"auto", "executor", "coder", "ops", "skills", "coord"}:
                     total += 8
-            if low in {"world-model", "environment-simulation"} and role in {"auto", "executor"}:
+            if low in {"world-model", "environment-simulation"} and role in {
+                "auto",
+                "executor",
+                "coder",
+                "coord",
+                "skills",
+            }:
                 total += 10
+            if low in {"research", "web", "search"} and role in {"research", "writer", "docs"}:
+                total += 8
         return max(0, min(100, total))
 
     def _band_scores(self, params_b: float | None) -> RoleScores:
@@ -102,53 +132,48 @@ class AffinityCatalog:
         try:
             response = httpx.get(
                 f"https://huggingface.co/api/models/{repo}",
-                params={"full": "true"},
-                timeout=3.0,
+                timeout=5.0,
+                follow_redirects=True,
             )
-            if response.status_code == 404:
+            if response.status_code >= 400:
                 self._hf_cache[repo] = None
                 return None
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            log.debug("huggingface lookup failed for %s: %s", repo, exc)
+            hints = _hints_from_hf(response.json())
+        except Exception as exc:  # noqa: BLE001 — enrich is best-effort
+            log.debug("huggingface enrich failed for %s: %s", repo, exc)
             self._hf_cache[repo] = None
             return None
-        hints = _hints_from_hf(payload)
         self._hf_cache[repo] = hints
         return hints
 
 
-def load_affinity(path: Path | None = None, huggingface_enrich: bool = False) -> AffinityCatalog:
+def load_affinity(path: Path | None = None, *, huggingface_enrich: bool = False) -> AffinityCatalog:
     target = path or packaged_models_path()
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"Affinity file must be a mapping: {target}")
     curated: list[CuratedModel] = []
     for item in raw.get("models") or []:
-        if not isinstance(item, dict) or not item.get("match"):
+        if not isinstance(item, dict):
+            continue
+        match = str(item.get("match") or "").strip()
+        if not match:
             continue
         curated.append(
             CuratedModel(
-                match=str(item["match"]),
+                match=match,
                 roles=_role_scores(item.get("roles") or {}),
                 notes=str(item.get("notes") or ""),
             )
         )
     heuristics = raw.get("heuristics") or {}
-    if not isinstance(heuristics, dict):
-        heuristics = {}
-    boost_raw = heuristics.get("boost_substrings") or {}
+    demote = tuple(str(item).casefold() for item in (heuristics.get("demote_substrings") or []))
     boost: dict[str, RoleScores] = {}
-    if isinstance(boost_raw, dict):
-        for key, value in boost_raw.items():
-            boost[str(key).casefold()] = _role_scores(value if isinstance(value, dict) else {})
+    for key, value in (heuristics.get("boost_substrings") or {}).items():
+        boost[str(key).casefold()] = _role_scores(value if isinstance(value, dict) else {})
     bands: list[tuple[float, RoleScores]] = []
     for item in heuristics.get("by_params_b") or []:
         if not isinstance(item, dict):
             continue
         bands.append((float(item.get("max") or 1000), _role_scores(item.get("roles") or {})))
-    demote = tuple(str(item).casefold() for item in (heuristics.get("demote_substrings") or []) if str(item).strip())
     return AffinityCatalog(
         curated=tuple(curated),
         demote_substrings=demote,
@@ -163,23 +188,30 @@ def packaged_models_path() -> Path:
     return Path(__file__).with_name("models.yaml")
 
 
-def _normalize_role(role: str) -> str:
-    name = (role or "auto").strip().casefold()
-    if name in {"chimp/auto"}:
-        return "auto"
-    if name not in ROLES:
-        return "auto"
-    return name
-
-
 def _role_scores(raw: object) -> RoleScores:
     data = raw if isinstance(raw, dict) else {}
+    auto = int(data.get("auto", 50))
+    executor = int(data.get("executor", auto))
+    planner = int(data.get("planner", auto))
+    reviewer = int(data.get("reviewer", auto))
+    triage = int(data.get("triage", 40))
+    # OpenBot classes inherit nearest Vibes role when omitted in YAML.
     return RoleScores(
-        auto=int(data.get("auto", 50)),
-        planner=int(data.get("planner", 50)),
-        executor=int(data.get("executor", 50)),
-        reviewer=int(data.get("reviewer", 50)),
-        triage=int(data.get("triage", 40)),
+        auto=auto,
+        planner=planner,
+        executor=executor,
+        reviewer=reviewer,
+        triage=triage,
+        coder=int(data.get("coder", executor)),
+        ops=int(data.get("ops", executor)),
+        research=int(data.get("research", planner)),
+        writer=int(data.get("writer", reviewer)),
+        design=int(data.get("design", reviewer)),
+        qa=int(data.get("qa", reviewer)),
+        docs=int(data.get("docs", planner)),
+        skills=int(data.get("skills", executor)),
+        assistant=int(data.get("assistant", triage if triage > 50 else auto)),
+        coord=int(data.get("coord", auto)),
     )
 
 
@@ -218,7 +250,6 @@ def _hints_from_hf(payload: object) -> ModelHints:
     gguf = payload.get("gguf") if isinstance(payload.get("gguf"), dict) else {}
     total = gguf.get("total")
     if isinstance(total, (int, float)) and total > 0:
-        # Hub often stores absolute parameter counts for GGUF.
         params_b = float(total) / 1_000_000_000.0 if total > 1000 else float(total)
     safetensors = payload.get("safetensors") if isinstance(payload.get("safetensors"), dict) else {}
     st_total = safetensors.get("total")
@@ -231,3 +262,7 @@ def _hints_from_hf(payload: object) -> ModelHints:
         context=int(context) if isinstance(context, int) else None,
         source="huggingface",
     )
+
+
+# Re-export for older imports
+_normalize_role = normalize_role

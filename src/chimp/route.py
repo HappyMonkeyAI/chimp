@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from chimp.config import EndpointConfig, Settings
 from chimp.inventory import ModelRecord, Snapshot
+from chimp.sticky import StickyPin
 
 
 class RouteError(Exception):
@@ -71,6 +72,7 @@ def place(
     purpose: str = "chat",
     exclude: frozenset[str] = frozenset(),
     needed_tokens: int | None = None,
+    sticky: StickyPin | None = None,
 ) -> Placement:
     label, preferred = resolve_model(requested, settings)
     free: list[tuple[EndpointConfig, ModelRecord, int, str]] = []
@@ -109,6 +111,21 @@ def place(
     secondary_free = [item for item in free if item[0].tier == "secondary"]
     # Cloud/free APIs are last resort: only when no primary can take the request.
     candidates = primary_free or secondary_free
+    if sticky is not None:
+        sticky_hit = _sticky_match(candidates, sticky)
+        if sticky_hit is not None:
+            endpoint, record, _active, base_reason = sticky_hit
+            target = None
+            if base_reason == "expand" and needed_tokens is not None and record.max_context is not None:
+                target = target_context(needed_tokens, record.max_context)
+            return Placement(
+                endpoint=endpoint,
+                model_id=record.id,
+                requested=label,
+                reason="sticky",
+                context_target=target,
+                max_context=record.max_context,
+            )
     pool: list[tuple[EndpointConfig, ModelRecord, int, str]] = []
     chosen_reason = ""
     for reason in order:
@@ -145,9 +162,24 @@ def place(
     )
 
 
+def _sticky_match(
+    candidates: list[tuple[EndpointConfig, ModelRecord, int, str]],
+    sticky: StickyPin,
+) -> tuple[EndpointConfig, ModelRecord, int, str] | None:
+    for item in candidates:
+        endpoint, record, _active, _reason = item
+        if endpoint.name != sticky.endpoint:
+            continue
+        if _same_model(record.id, sticky.model_id):
+            return item
+    return None
+
+
 def resolve_model(requested: str | None, settings: Settings) -> tuple[str, tuple[str, ...]]:
-    name = (requested or "").strip()
-    if not name or name in {"auto", "chimp/auto"}:
+    from chimp.roles import strip_provider_prefix
+
+    name = strip_provider_prefix(requested or "").strip()
+    if not name or name.casefold() == "auto":
         alias = settings.aliases.get("auto")
         if alias is not None:
             return alias.name, alias.models
@@ -159,6 +191,9 @@ def resolve_model(requested: str | None, settings: Settings) -> tuple[str, tuple
     match = folded.get(name.casefold())
     if match is not None:
         return match.name, match.models
+    # Unknown auto:<class> still ranks by that class affinity with any chat model.
+    if name.casefold().startswith("auto:"):
+        return name.casefold(), ()
     return name, (name,)
 
 

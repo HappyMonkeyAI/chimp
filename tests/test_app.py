@@ -93,6 +93,60 @@ async def test_missing_token_is_rejected_and_health_stays_open(client):
     assert health.status_code == 200
 
 
+async def test_ui_and_status_include_sticky(client):
+    api, _hold, _started = client
+    ui = await api.get("/ui", headers=_auth())
+    assert ui.status_code == 200
+    assert "text/html" in ui.headers["content-type"]
+    assert b"Sticky pins" in ui.content
+    status = await api.get("/status", headers=_auth())
+    body = status.json()
+    assert "sticky" in body
+    assert "advisor" in body
+    assert body["advisor"]["enabled"] is False
+
+
+async def test_ui_config_saves_gitignored_yaml(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+endpoints:
+  - name: box
+    kind: openai
+    base_url: http://127.0.0.1:9
+""",
+        encoding="utf-8",
+    )
+    from chimp.config import load_settings
+
+    settings = load_settings(path)
+    settings = Settings(
+        listen_host=settings.listen_host,
+        listen_port=settings.listen_port,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=settings.endpoints,
+        aliases=settings.aliases,
+        affinity=settings.affinity,
+        config_path=path,
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
+    app = build_app(settings, client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            page = await api.get("/ui/config")
+            assert page.status_code == 200
+            assert b"box" in page.content
+            saved = await api.post(
+                "/ui/config",
+                content="endpoints:\n  - name: edited\n    kind: openai\n    base_url: http://127.0.0.1:9\n",
+                headers={"content-type": "text/yaml"},
+            )
+            assert saved.status_code == 200
+            assert "edited" in path.read_text(encoding="utf-8")
+
+
 async def test_second_request_cold_loads_when_the_warm_slot_is_held(client):
     api, hold, started = client
 

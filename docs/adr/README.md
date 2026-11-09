@@ -6,3 +6,4 @@ Project-local ADRs. Shared agent law stays in [AgentsProtocol](https://github.co
 |-----|-------|--------|
 | [0001](0001-public-repo-local-config.md) | Public MIT tree vs local machine config | Accepted |
 | [0002](0002-secondary-cloud-tier.md) | Secondary cloud endpoints as last resort | Accepted |
+| [0003](0003-sticky-placement.md) | Sticky placement for cache locality | Accepted |

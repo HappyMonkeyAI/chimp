@@ -8,9 +8,16 @@ api_key: ${CHIMP_API_KEY:-}
 poll_interval_seconds: 10
 request_timeout_seconds: 600
 huggingface_enrich: false
+enrich_on_start: true
+sticky: true
+sticky_ttl_seconds: 1800
 
 aliases:
   auto:
+    models: []
+  auto:coder:
+    models: []
+  auto:research:
     models: []
   planner:
     models:

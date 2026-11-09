@@ -274,6 +274,37 @@ def test_unreachable_fleet_is_503():
         raise AssertionError("expected 503")
 
 
+def test_auto_coder_prefers_coder_model_over_agentworld_when_both_warm():
+    settings = _settings()
+    snapshots = {
+        "laptop": _snap("laptop", [("unsloth/Qwen3-Coder-30B-A3B-GGUF", True)]),
+        "desktop": _snap("desktop", [("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", True)]),
+    }
+    chosen = place(settings, snapshots, {}, "auto:coder")
+    assert chosen.model_id == "unsloth/Qwen3-Coder-30B-A3B-GGUF"
+    assert chosen.endpoint.name == "laptop"
+    assert chosen.requested == "auto:coder"
+
+
+def test_chimpr_auto_coder_prefix_resolves_like_auto_coder():
+    from chimp.route import resolve_model
+
+    settings = _settings()
+    label, preferred = resolve_model("chimpr/auto:coder", settings)
+    assert label == "auto:coder"
+    assert preferred == ()
+    chosen = place(
+        settings,
+        {
+            "laptop": _snap("laptop", [("unsloth/Qwen3-Coder-30B-A3B-GGUF", True)]),
+            "desktop": _snap("desktop", [("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", True)]),
+        },
+        {},
+        "chimpr/auto:coder",
+    )
+    assert chosen.model_id == "unsloth/Qwen3-Coder-30B-A3B-GGUF"
+
+
 def _snap_kinds(name: str, models: list[tuple[str, bool | None, str]]) -> Snapshot:
     return Snapshot(
         name=name,

@@ -15,10 +15,11 @@ from typing import Any
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from chimp import __version__
+from chimp.advisor import advise
 from chimp.config import EndpointConfig, Settings
 from chimp.inventory import Inventory, auth_headers
 from chimp.route import (
@@ -30,6 +31,17 @@ from chimp.route import (
     overflow_tokens,
     place,
     target_context,
+)
+from chimp.sticky import StickyTable
+from chimp.ui import config_page_html, status_page_html
+
+# Cloud / OpenAI-compatible prompt-cache knobs — never strip from the JSON body (T6).
+CACHE_BODY_KEYS = frozenset(
+    {
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "prompt_cache_options",
+    }
 )
 
 log = logging.getLogger("chimp")
@@ -70,6 +82,7 @@ class Gate:
         purpose: str,
         exclude: frozenset[str] = frozenset(),
         needed_tokens: int | None = None,
+        sticky=None,
     ) -> Placement:
         async with self._lock:
             placement = place(
@@ -80,6 +93,7 @@ class Gate:
                 purpose=purpose,
                 exclude=exclude,
                 needed_tokens=needed_tokens,
+                sticky=sticky,
             )
             name = placement.endpoint.name
             self.inflight[name] = self.inflight.get(name, 0) + 1
@@ -99,10 +113,13 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     inventory = Inventory(settings.endpoints, client)
     gate = Gate()
     decisions: deque[dict[str, Any]] = deque(maxlen=50)
+    sticky = StickyTable(ttl_seconds=settings.sticky_ttl_seconds, enabled=settings.sticky)
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         await inventory.refresh_all()
+        if settings.enrich_on_start:
+            _seed_affinity_from_inventory(settings, inventory)
         stop = asyncio.Event()
 
         async def poll() -> None:
@@ -128,6 +145,8 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         routes=[
             Route("/health", _health, methods=["GET"]),
             Route("/status", _status, methods=["GET"]),
+            Route("/ui", _ui, methods=["GET"]),
+            Route("/ui/config", _ui_config, methods=["GET", "POST"]),
             Route("/v1/models", _models, methods=["GET"]),
             Route("/v1/chat/completions", _proxy, methods=["POST"]),
             Route("/v1/completions", _proxy, methods=["POST"]),
@@ -141,6 +160,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     app.state.inventory = inventory
     app.state.gate = gate
     app.state.decisions = decisions
+    app.state.sticky = sticky
     return app
 
 
@@ -150,8 +170,55 @@ async def _root(_request: Request) -> JSONResponse:
             "service": "chimp",
             "version": __version__,
             "status": "/status",
+            "ui": "/ui",
             "models": "/v1/models",
         }
+    )
+
+
+async def _ui(request: Request) -> Response:
+    denied = _authorize(request)
+    if denied is not None:
+        return denied
+    return Response(status_page_html(), media_type="text/html; charset=utf-8")
+
+
+async def _ui_config(request: Request) -> Response:
+    denied = _authorize(request)
+    if denied is not None:
+        return denied
+    settings: Settings = request.app.state.settings
+    path = settings.config_path
+    message = ""
+    error = ""
+    if request.method == "POST":
+        text = (await request.body()).decode("utf-8", errors="replace")
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "application/x-www-form-urlencoded" in content_type and text.startswith("body="):
+            from urllib.parse import parse_qs
+
+            text = parse_qs(text).get("body", [""])[0]
+        if path is None:
+            error = "No config path is bound (started without load_settings path)."
+        else:
+            try:
+                path.write_text(text, encoding="utf-8")
+                message = f"Saved {path}. Restart chimp to apply."
+            except OSError as exc:
+                error = f"Could not write {path}: {exc}"
+    body = ""
+    if path is not None and path.is_file():
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            error = error or f"Could not read {path}: {exc}"
+    return HTMLResponse(
+        config_page_html(
+            path=str(path) if path else "(unset)",
+            body=body,
+            message=message,
+            error=error,
+        )
     )
 
 
@@ -186,7 +253,29 @@ async def _status(request: Request) -> Response:
                 ],
             }
         )
-    return JSONResponse({"service": "chimp", "version": __version__, "endpoints": endpoints, "recent": list(request.app.state.decisions)})
+    sticky: StickyTable = request.app.state.sticky
+    pins = [
+        {
+            "key": pin.key,
+            "endpoint": pin.endpoint,
+            "model": pin.model_id,
+            "expires_at": pin.expires_at,
+        }
+        for pin in sticky.active()
+    ]
+    return JSONResponse(
+        {
+            "service": "chimp",
+            "version": __version__,
+            "endpoints": endpoints,
+            "sticky": pins,
+            "advisor": {
+                "enabled": settings.advisor.enabled,
+                "model": settings.advisor.model if settings.advisor.enabled else None,
+            },
+            "recent": list(request.app.state.decisions),
+        }
+    )
 
 
 async def _models(request: Request) -> Response:
@@ -213,7 +302,7 @@ def catalog(settings: Settings, inventory: Inventory) -> list[dict[str, Any]]:
             return
         cards[model_id] = _model_card(model_id, owner, loaded)
 
-    aliases = sorted(settings.aliases.values(), key=lambda item: (item.name != "auto", item.name))
+    aliases = sorted(settings.aliases.values(), key=_alias_sort_key)
     for alias in aliases:
         add(alias.name, "chimp", None)
     for name, snapshot in inventory.snapshots().items():
@@ -234,6 +323,42 @@ def _model_card(model_id: str, owner: str, loaded: bool | None) -> dict[str, Any
     }
 
 
+def _alias_sort_key(alias: Any) -> tuple[int, str]:
+    name = str(getattr(alias, "name", ""))
+    if name == "auto":
+        return (0, name)
+    if name.startswith("auto:"):
+        return (1, name)
+    return (2, name)
+
+
+def _seed_affinity_from_inventory(settings: Settings, inventory: Inventory) -> None:
+    ids: list[str] = []
+    for snapshot in inventory.snapshots().values():
+        if not snapshot.healthy:
+            continue
+        for model in snapshot.models:
+            if model.id not in ids:
+                ids.append(model.id)
+    if not ids:
+        log.info("affinity enrich: no live models yet")
+        return
+    report = settings.affinity.seed_live(ids)
+    top = sorted(report.items(), key=lambda item: item[1].get("auto", 0), reverse=True)[:8]
+    summary = ", ".join(f"{model_id}={scores.get('auto', 0)}" for model_id, scores in top)
+    log.info("affinity enrich: scored %s live models; top auto: %s", len(ids), summary or "-")
+
+
+def _is_open_auto(model_id: str | None) -> bool:
+    """True when the client left model open (auto / provider-prefixed auto)."""
+    if not model_id or not str(model_id).strip():
+        return True
+    from chimp.roles import strip_provider_prefix
+
+    name = strip_provider_prefix(str(model_id)).strip().casefold()
+    return name == "auto"
+
+
 async def _proxy(request: Request) -> Response:
     denied = _authorize(request)
     if denied is not None:
@@ -249,17 +374,28 @@ async def _proxy(request: Request) -> Response:
     requested = payload.get("model")
     requested_text = requested if isinstance(requested, str) else None
     role = request.headers.get("x-chimp-role")
-    if (not requested_text or requested_text in {"auto", "chimp/auto"}) and role:
+    if role and _is_open_auto(requested_text):
         requested_text = role
 
     settings: Settings = request.app.state.settings
     client: httpx.AsyncClient = request.app.state.client
     inventory: Inventory = request.app.state.inventory
     gate: Gate = request.app.state.gate
+    sticky: StickyTable = request.app.state.sticky
     exclude: set[str] = set()
     widened: set[str] = set()
     last_transport: Exception | None = None
     needed = estimate_tokens(payload)
+    sticky_key = sticky.resolve_key(payload, request.headers)
+    sticky_pin = sticky.get(sticky_key)
+    advisor_used = False
+
+    if settings.advisor.enabled and _is_open_auto(requested_text) and purpose == "chat":
+        candidates = _live_chat_ids(inventory)
+        hint = await advise(client, settings.advisor, payload, candidates)
+        if hint:
+            requested_text = hint
+            advisor_used = True
 
     while True:
         try:
@@ -270,11 +406,19 @@ async def _proxy(request: Request) -> Response:
                 purpose,
                 frozenset(exclude),
                 needed_tokens=needed,
+                sticky=sticky_pin,
             )
         except RouteError as exc:
+            if sticky_pin is not None and sticky_pin.endpoint in exclude:
+                sticky.clear(sticky_key)
+                sticky_pin = None
             if last_transport is not None:
                 return _error(502, "upstream_unavailable", f"Upstream connection failed: {last_transport}")
             return _error(exc.status, exc.code, exc.message)
+        if sticky_pin is not None and placement.reason != "sticky" and placement.endpoint.name != sticky_pin.endpoint:
+            # Pin missed (busy/unavailable) — drop so the next turn can re-pin.
+            sticky.clear(sticky_key)
+            sticky_pin = None
         model_id = placement.model_id
         if placement.reason == "expand" and placement.context_target and placement.endpoint.name not in widened:
             try:
@@ -286,22 +430,28 @@ async def _proxy(request: Request) -> Response:
                 continue
             widened.add(placement.endpoint.name)
         payload["model"] = model_id
+        _keep_cache_fields(payload)
         if placement.endpoint.kind == "lmstudio":
             try:
                 await _drop_smaller_siblings(client, inventory, placement.endpoint, model_id)
             except Exception as exc:
                 log.warning("could not unload the smaller context on %s: %s", placement.endpoint.name, exc)
-        _remember(request, placement)
+        reason = placement.reason
+        if advisor_used and reason != "sticky":
+            reason = f"{reason}+advisor"
+        sticky.remember(sticky_key, placement.endpoint.name, model_id)
+        _remember(request, placement, reason=reason, sticky_key=sticky_key)
         log.info(
-            "route %s -> %s model=%s reason=%s tokens=%s",
+            "route %s -> %s model=%s reason=%s tokens=%s sticky=%s",
             placement.requested,
             placement.endpoint.name,
             model_id,
-            placement.reason,
+            reason,
             needed,
+            sticky_key or "-",
         )
         try:
-            return await _dispatch(request, client, gate, placement, payload)
+            return await _dispatch(request, client, gate, placement, payload, reason=reason)
         except ContextOverflow as overflow:
             if await _retry_wider(client, inventory, placement, overflow.tokens, widened):
                 needed = max(needed, overflow.tokens)
@@ -310,21 +460,48 @@ async def _proxy(request: Request) -> Response:
             log.warning("%s context still too small for %s tokens", placement.endpoint.name, overflow.tokens)
         except httpx.TransportError as exc:
             exclude.add(placement.endpoint.name)
+            sticky.clear_endpoint(placement.endpoint.name)
             last_transport = exc
             log.warning("upstream %s failed before a response: %s", placement.endpoint.name, exc)
 
 
-def _remember(request: Request, placement: Placement) -> None:
+def _remember(
+    request: Request,
+    placement: Placement,
+    reason: str | None = None,
+    sticky_key: str | None = None,
+) -> None:
     request.app.state.decisions.append(
         {
             "time": time.time(),
             "requested": placement.requested,
             "endpoint": placement.endpoint.name,
             "model": placement.model_id,
-            "reason": placement.reason,
+            "reason": reason or placement.reason,
+            "sticky": sticky_key,
             "path": request.url.path,
         }
     )
+
+
+def _live_chat_ids(inventory: Inventory) -> list[str]:
+    ids: list[str] = []
+    for snapshot in inventory.snapshots().values():
+        if not snapshot.healthy:
+            continue
+        for model in snapshot.models:
+            if model.kind in {"embedding", "embed"}:
+                continue
+            if model.id not in ids:
+                ids.append(model.id)
+    return ids
+
+
+def _keep_cache_fields(payload: dict[str, Any]) -> None:
+    """No-op marker: cache knobs stay on the payload; callers must not delete them."""
+    for key in CACHE_BODY_KEYS:
+        if key in payload and payload[key] is None:
+            del payload[key]
 
 
 async def _dispatch(
@@ -333,6 +510,7 @@ async def _dispatch(
     gate: Gate,
     placement: Placement,
     payload: dict[str, Any],
+    reason: str | None = None,
 ) -> Response:
     endpoint = placement.endpoint
     url = f"{endpoint.base_url}{request.url.path}"
@@ -353,7 +531,12 @@ async def _dispatch(
         finally:
             await gate.release(endpoint.name)
 
-    response_headers = _response_headers(upstream, placement, str(payload.get("model") or placement.model_id))
+    response_headers = _response_headers(
+        upstream,
+        placement,
+        str(payload.get("model") or placement.model_id),
+        reason=reason,
+    )
     if not stream or upstream.status_code >= 400:
         try:
             body = await upstream.aread()
@@ -518,11 +701,16 @@ def _forward_headers(request: Request, api_key: str | None) -> dict[str, str]:
     return headers
 
 
-def _response_headers(upstream: httpx.Response, placement: Placement, model_id: str) -> dict[str, str]:
+def _response_headers(
+    upstream: httpx.Response,
+    placement: Placement,
+    model_id: str,
+    reason: str | None = None,
+) -> dict[str, str]:
     headers = {
         "x-chimp-endpoint": placement.endpoint.name,
         "x-chimp-model": model_id,
-        "x-chimp-reason": placement.reason,
+        "x-chimp-reason": reason or placement.reason,
         "x-accel-buffering": "no",
     }
     content_type = upstream.headers.get("content-type")

@@ -10,14 +10,49 @@ request_timeout_seconds: 600
 # models_path: models.yaml
 # Optional: fetch Hugging Face tags/params for unknown model ids (cached).
 huggingface_enrich: false
+# On startup, score live inventory model ids into affinity (heuristics ± HF).
+# Bypass with enrich_on_start: false, --no-enrich, or CHIMP_NO_ENRICH=1.
+# Periodic poll_interval_seconds refresh still runs; boot enrich is a one-shot warm.
+enrich_on_start: true
+# Pin warm endpoint+model by prompt_cache_key / X-Chimp-Session / message prefix.
+sticky: true
+sticky_ttl_seconds: 1800
+# Optional advisor for bare `auto` only (never overrides auto:coder etc.). Disabled by default.
+# advisor:
+#   enabled: true
+#   base_url: http://127.0.0.1:1234
+#   model: gemma-2-2b-it
+#   api_key: ${ADVISOR_API_KEY:-}
+#   timeout_seconds: 2
 
-# Role names Vibes (or any client) can send in the "model" field.
+# Role / work-class names clients send in the "model" field.
 # models: preference order. The router still prefers a free endpoint that
 # already has one of these loaded over a higher preference that is cold.
+# OpenBot auto:<class> aliases are also injected by default if omitted here.
 aliases:
-  # Put this id in OpenBot (or any client). Chimp picks a free endpoint
-  # that already has a chat model loaded.
+  # Any warm chat model (OpenBot default: chimpr/auto).
   auto:
+    models: []
+  # OpenBot desks — set each agent's model to one of these (or chimpr/auto:coder).
+  auto:coder:
+    models: []
+  auto:ops:
+    models: []
+  auto:research:
+    models: []
+  auto:writer:
+    models: []
+  auto:design:
+    models: []
+  auto:qa:
+    models: []
+  auto:docs:
+    models: []
+  auto:skills:
+    models: []
+  auto:assistant:
+    models: []
+  auto:coord:
     models: []
   planner:
     models:

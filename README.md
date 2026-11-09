@@ -62,23 +62,32 @@ cp config.docker.yaml config.yaml
 docker compose up --build
 ```
 
-Binds `127.0.0.1:8787`. See `compose.yaml`.
+Or pull without building (`image: ghcr.io/happymonkeyai/chimp:latest` in `compose.yaml`):
 
-Check placement with `GET /status`. `GET /health` stays open even when an API key is set, so a process monitor can probe it.
+```bash
+docker compose pull
+docker compose up
+```
+
+Binds `127.0.0.1:8787`. Tags publish via `.github/workflows/publish-ghcr.yml` on `v*` tags.
+
+Check placement with `GET /status` or the dashboard at `GET /ui`. On Windows, `scripts/open-status.ps1` starts chimp if needed and opens `/ui`. `GET /health` stays open even when an API key is set, so a process monitor can probe it.
 
 ## How a request is placed
 
-The `model` field is either a role alias (`executor`, `planner`, …) or a real model id. `auto` means any chat model. `X-Chimp-Role` is used only when `model` is omitted or `auto`.
+The `model` field is either a role alias (`executor`, `planner`, `auto:coder`, …) or a real model id. `auto` means any chat model. `X-Chimp-Role` is used only when `model` is omitted or plain `auto`.
 
 1. Use a free endpoint where a matching model is already loaded.
 2. If the loaded window is too small on LM Studio, widen that instance before answering.
 3. If loaded state is unknown (a plain OpenAI endpoint), use a free endpoint that lists the model.
 4. Load a matching model on a free endpoint only when nothing suitable is already warm.
-5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub.
-6. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
-7. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request.
+5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub. At boot, live inventory ids are scored once (`enrich_on_start`, skip with `--no-enrich` / `CHIMP_NO_ENRICH=1`); the periodic poll still refreshes reachability only.
+6. Sticky pins (ADR-0003) reuse the same warm endpoint+model for `prompt_cache_key`, `X-Chimp-Session`, or a stable message-prefix hash while the pin TTL holds and the slot is free.
+7. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
+8. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request. Cloud prompt-cache fields on the JSON body are forwarded as-is.
+9. Optional `advisor` (disabled by default) may re-label bare `auto` among legal candidates; explicit `auto:<class>` is never overridden.
 
-Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, or `cold`) say where it went. The JSON body is streamed through unchanged.
+Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, `cold`, or `sticky`) say where it went. The JSON body is streamed through unchanged.
 
 ## Endpoints
 
@@ -95,7 +104,24 @@ Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`war
 
 In each role, set the base URL to `http://127.0.0.1:8787/v1` and the model to the alias (`executor`, `planner`, `reviewer`, `triage`). Constitutions stay in Vibes.
 
-OpenBot's custom provider uses the same base URL. Find models lists `auto` even when a backend is down. Put `auto` in the model id: Chimp resolves it to a free endpoint whose chat model is already loaded. `executor`, `planner`, `reviewer`, and `triage` are listed the same way.
+## OpenBot
+
+Custom provider base URL: `http://127.0.0.1:8787/v1`. Find models lists `auto` and `auto:<class>` even when a backend is down. Provider-prefixed ids like `chimpr/auto:coder` are accepted.
+
+| OpenBot desk (examples) | Model id |
+|---|---|
+| Software Engineer, Bug Fixer, PR Shepherd, Security Reviewer, Change Reviewer | `auto:coder` |
+| Ops | `auto:ops` |
+| Research Desk, Prospect Researcher, Crypto Desk | `auto:research` |
+| Copy Editor, Scope Writer, Search Content Planner, Handoff Spec Writer | `auto:writer` |
+| Design Critic, Prototype Builder, Accessibility Desk | `auto:design` |
+| QA Tester | `auto:qa` |
+| Archivist | `auto:docs` |
+| Skill Smith, Dr. Eggbot | `auto:skills` |
+| Chief of Staff | `auto:assistant` |
+| CEO | `auto:coord` or `auto` |
+
+Plain `auto` still means “any warm chat model” (affinity for general/agent). Classes only change ranking among free warm endpoints — they do not analyze the prompt text.
 
 A connection test that generates one token occupies a slot for that call. A prompt that does not fit the loaded context asks LM Studio to widen that model's window before answering, up to the model's maximum.
 
@@ -121,5 +147,5 @@ Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/Agent
 | [`LINKS.md`](LINKS.md) | External research links |
 | [`docs/adr/`](docs/adr/) | Project ADRs |
 
-`GET /status` is the data a web dashboard or desktop app would show; see roadmap before building UI on top.
+`GET /ui` is a thin status dashboard over `/status` (endpoints, sticky pins, recent placements). `GET/POST /ui/config` edits the gitignored `config.yaml` bound at startup (restart to apply).
 

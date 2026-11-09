@@ -45,8 +45,10 @@ src/chimp/
 | P3 | Secondary cloud tier + public MIT + installers | done (commit pending for install/docs) |
 | P4 | Agents Protocol spine + Spine hook | done |
 | P4b | Optional Docker Compose packaging | done |
-| P5 | Sticky / prefix-cache-aware placement | planned (ROADMAP / LINKS) |
-| P6 | Electron desktop on `/status` | planned (ROADMAP) |
+| P5 | OpenBot `auto:<class>` + boot enrich (TASKS Wave 1–2) | done |
+| P6 | Sticky / prefix-cache + cloud cache pass-through (Wave 3) | done |
+| P7 | Advisor classify among legal candidates (Wave 4) | done |
+| P8 | GHCR + desktop/status UI (Waves 5–6) | done |
 
 ## Non-goals (this plan)
 

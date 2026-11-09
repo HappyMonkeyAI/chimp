@@ -39,6 +39,15 @@ class AliasConfig:
 
 
 @dataclass(frozen=True)
+class AdvisorConfig:
+    enabled: bool = False
+    base_url: str | None = None
+    model: str = "auto"
+    api_key: str | None = None
+    timeout_seconds: float = 2.0
+
+
+@dataclass(frozen=True)
 class Settings:
     listen_host: str
     listen_port: int
@@ -49,6 +58,11 @@ class Settings:
     aliases: dict[str, AliasConfig]
     affinity: AffinityCatalog
     huggingface_enrich: bool = False
+    enrich_on_start: bool = True
+    sticky: bool = True
+    sticky_ttl_seconds: float = 1800.0
+    advisor: AdvisorConfig = AdvisorConfig()
+    config_path: Path | None = None
 
 
 def expand_env(value: object) -> object:
@@ -88,8 +102,15 @@ def load_settings(path: Path) -> Settings:
     if len(names) != len(set(names)):
         raise ConfigError("Endpoint names must be unique.")
     aliases = _parse_aliases(data.get("aliases") or {})
+    aliases = _with_default_auto_classes(aliases)
     api_key = _blank_to_none(data.get("api_key"))
     huggingface_enrich = bool(data.get("huggingface_enrich") or False)
+    enrich_on_start = _enrich_on_start(data.get("enrich_on_start"))
+    sticky = True if data.get("sticky") is None else bool(data.get("sticky"))
+    sticky_ttl_seconds = float(data.get("sticky_ttl_seconds") or 1800)
+    if sticky_ttl_seconds < 1:
+        raise ConfigError("sticky_ttl_seconds must be at least 1.")
+    advisor = _parse_advisor(data.get("advisor"))
     affinity_path = _optional_path(data.get("models_path"), path.parent)
     from chimp.affinity import load_affinity
 
@@ -107,6 +128,11 @@ def load_settings(path: Path) -> Settings:
         aliases=aliases,
         affinity=affinity,
         huggingface_enrich=huggingface_enrich,
+        enrich_on_start=enrich_on_start,
+        sticky=sticky,
+        sticky_ttl_seconds=sticky_ttl_seconds,
+        advisor=advisor,
+        config_path=path,
     )
 
 
@@ -176,6 +202,48 @@ def _parse_aliases(raw: object) -> dict[str, AliasConfig]:
             raise ConfigError(f"Alias {name!r} must be a list or a mapping with models.")
         aliases[str(name)] = AliasConfig(name=str(name), models=tuple(models))
     return aliases
+
+
+def _with_default_auto_classes(aliases: dict[str, AliasConfig]) -> dict[str, AliasConfig]:
+    """Ensure OpenBot auto:<class> aliases exist unless the operator overrode them."""
+    from chimp.roles import AUTO_CLASS_ALIASES
+
+    merged = dict(aliases)
+    for name in AUTO_CLASS_ALIASES:
+        if name not in merged:
+            merged[name] = AliasConfig(name=name, models=())
+    return merged
+
+
+def _enrich_on_start(raw: object) -> bool:
+    """Default on; CHIMP_NO_ENRICH=1 or enrich_on_start: false disables."""
+    if os.environ.get("CHIMP_NO_ENRICH", "").strip() in {"1", "true", "yes"}:
+        return False
+    if raw is None:
+        return True
+    return bool(raw)
+
+
+def _parse_advisor(raw: object) -> AdvisorConfig:
+    if raw is None:
+        return AdvisorConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError("advisor must be a mapping.")
+    base_url = _blank_to_none(raw.get("base_url"))
+    if base_url:
+        base_url = _normalize_base_url(base_url)
+    enabled = bool(raw.get("enabled")) if raw.get("enabled") is not None else bool(base_url)
+    timeout = float(raw.get("timeout_seconds") or 2)
+    if timeout <= 0:
+        raise ConfigError("advisor.timeout_seconds must be positive.")
+    model = str(raw.get("model") or "auto").strip() or "auto"
+    return AdvisorConfig(
+        enabled=enabled and bool(base_url),
+        base_url=base_url,
+        model=model,
+        api_key=_blank_to_none(raw.get("api_key")),
+        timeout_seconds=timeout,
+    )
 
 
 def _as_list(value: object, label: str) -> list[object]:

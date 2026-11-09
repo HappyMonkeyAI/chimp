@@ -29,7 +29,9 @@ Each criterion is independently verifiable. Evidence: unit | integration | live.
 ## S5 — Public hygiene
 
 - [x] `config.yaml` and `.agent/` are gitignored; MIT LICENSE present; example hosts are placeholders. *(repo check 2026-11-08)*
-- [ ] Sticky / prefix-cache-aware placement (ROADMAP) — not yet specified as acceptance. *(todo)*
+- [x] Sticky / prefix-cache-aware placement by `prompt_cache_key` / `X-Chimp-Session` / prefix hash; TTL pins; busy skips pin. *(unit — tests/test_sticky.py; ADR-0003)*
+- [x] Cloud prompt-cache body fields pass through unchanged. *(unit — tests/test_cache_passthrough.py)*
+- [x] Status UI at `GET /ui` mirrors `/status` endpoints, sticky pins, recent placements. *(unit — tests/test_app.py)*
 
 ## S6 — Quality gate
 

@@ -1,13 +1,19 @@
 # Optional packaging lane — native installers remain the default.
-# 1. copy config.docker.yaml config.yaml
-# 2. edit endpoints (host.docker.internal → LM Studio / Unsloth on the host)
-# 3. docker compose up --build
+# Build locally:
+#   1. copy config.docker.yaml config.yaml
+#   2. edit endpoints (host.docker.internal → LM Studio / Unsloth on the host)
+#   3. docker compose up --build
+# Or pull the published image (no build):
+#   image: ghcr.io/happymonkeyai/chimp:latest
+#   docker compose up
 #
 # Docker does not remove LAN config work: the container must still reach your GPUs.
 
 services:
   chimp:
     build: .
+    # Prefer the published image when you do not want to build:
+    # image: ghcr.io/happymonkeyai/chimp:latest
     image: chimp:local
     ports:
       - "127.0.0.1:8787:8787"
