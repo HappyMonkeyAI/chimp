@@ -15,9 +15,11 @@ Status: `todo` → `doing` → `review` → `done`. One board only.
 - [ ] T6 Pass through cloud prompt-cache fields on secondary endpoints
 - [ ] T7 System One advisor tie-break (optional; after sticky)
 
-## P2 — Product
+## P2 — Packaging / product
 
-- [ ] T8 Electron (or sibling) desktop shell over `/status` — only after status UX is worth operating
+- [x] T8 Optional Docker Compose + Dockerfile + `config.docker.yaml`
+- [ ] T9 Electron (or sibling) desktop shell over `/status` — only after status UX is worth operating
+- [ ] T10 Publish GHCR image for Compose `image:` pull (optional)
 
 ## Done recently (pre-board)
 

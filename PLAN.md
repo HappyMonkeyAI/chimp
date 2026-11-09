@@ -43,7 +43,8 @@ src/chimp/
 | P1 | Context expand + stream hold for clients | done |
 | P2 | Affinity map | done |
 | P3 | Secondary cloud tier + public MIT + installers | done (commit pending for install/docs) |
-| P4 | Agents Protocol spine + Spine hook | doing |
+| P4 | Agents Protocol spine + Spine hook | done |
+| P4b | Optional Docker Compose packaging | done |
 | P5 | Sticky / prefix-cache-aware placement | planned (ROADMAP / LINKS) |
 | P6 | Electron desktop on `/status` | planned (ROADMAP) |
 

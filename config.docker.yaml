@@ -1,0 +1,55 @@
+# Docker-oriented example. Copy to config.yaml before `docker compose up`.
+# listen must be 0.0.0.0 so the published port can reach the process.
+# On Docker Desktop / Compose, host.docker.internal usually reaches LM Studio
+# or Unsloth running on the same machine as the daemon.
+
+listen: 0.0.0.0:8787
+api_key: ${CHIMP_API_KEY:-}
+poll_interval_seconds: 10
+request_timeout_seconds: 600
+huggingface_enrich: false
+
+aliases:
+  auto:
+    models: []
+  planner:
+    models:
+      - qwen3-32b
+  executor:
+    models:
+      - qwen3-coder
+      - qwen3-32b
+  reviewer:
+    models:
+      - qwen3-32b
+  triage:
+    models:
+      - qwen3-4b
+      - qwen3-32b
+
+endpoints:
+  - name: host-lmstudio
+    kind: lmstudio
+    base_url: http://host.docker.internal:1234
+    api_key: ${LMSTUDIO_API_KEY:-}
+    max_concurrent: 1
+
+  - name: host-unsloth
+    kind: unsloth
+    base_url: http://host.docker.internal:8888
+    api_key: ${LAPTOP_UNSLOTH_API_KEY:-}
+    max_concurrent: 1
+
+  - name: groq
+    kind: openai
+    tier: secondary
+    base_url: https://api.groq.com/openai/v1
+    api_key: ${GROQ_API_KEY:-}
+    max_concurrent: 2
+
+  - name: mistral
+    kind: openai
+    tier: secondary
+    base_url: https://api.mistral.ai/v1
+    api_key: ${MISTRAL_API_KEY:-}
+    max_concurrent: 2

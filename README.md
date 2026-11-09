@@ -50,7 +50,19 @@ cp config.example.yaml config.yaml
 .venv/bin/chimp
 ```
 
-`config.yaml` is gitignored — keep your real LAN URLs and keys there (or point `CHIMP_CONFIG` at another path). Only `config.example.yaml` is meant for the public repo. Set `CHIMP_API_KEY` when the listen address is reachable beyond localhost.
+`config.yaml` is gitignored — keep your real LAN URLs and keys there (or point `CHIMP_CONFIG` at another path). Only `config.example.yaml` / `config.docker.yaml` are meant for the public repo. Set `CHIMP_API_KEY` when the listen address is reachable beyond localhost.
+
+### Docker Compose (optional)
+
+Native installers stay the default. Compose is useful if you already run services in Docker; you still have to point endpoints at reachable GPU hosts (`host.docker.internal` on Desktop, or LAN IPs).
+
+```bash
+cp config.docker.yaml config.yaml
+# edit listen (already 0.0.0.0:8787) and endpoint URLs, then:
+docker compose up --build
+```
+
+Binds `127.0.0.1:8787`. See `compose.yaml`.
 
 Check placement with `GET /status`. `GET /health` stays open even when an API key is set, so a process monitor can probe it.
 

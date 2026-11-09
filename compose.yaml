@@ -1,0 +1,25 @@
+# Optional packaging lane — native installers remain the default.
+# 1. copy config.docker.yaml config.yaml
+# 2. edit endpoints (host.docker.internal → LM Studio / Unsloth on the host)
+# 3. docker compose up --build
+#
+# Docker does not remove LAN config work: the container must still reach your GPUs.
+
+services:
+  chimp:
+    build: .
+    image: chimp:local
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      CHIMP_CONFIG: /app/config.yaml
+      CHIMP_LOG: ${CHIMP_LOG:-INFO}
+      # Optional secondary-tier keys (never commit real values):
+      # GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      # LLM7_API_KEY: ${LLM7_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

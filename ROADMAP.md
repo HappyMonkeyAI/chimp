@@ -9,6 +9,7 @@ Future work and product ideas. Not a delivery promise. Research links stay in [`
 - LM Studio context widen; stream hold for clients like OpenBot/Pi
 - `tier: secondary` cloud fallbacks (Groq / Mistral / LLM7)
 - Public MIT repo; gitignored local `config.yaml`; Windows/Linux install scripts
+- Optional Docker image + `compose.yaml` (native installers remain primary)
 
 ## Near-term (router)
 
@@ -39,6 +40,7 @@ Prerequisite called out in README: status API is already the data plane; a deskt
 - GitHub Models path adapter (`/chat/completions` without `/v1`)
 - Broader free-provider catalog sync from local-ai-planner allowlist
 - Packaging: `winget` / Homebrew cask once install scripts prove out
+- Publish `ghcr.io/happymonkeyai/chimp` image (Compose currently builds locally)
 
 ## How to use this file
 

@@ -11,6 +11,7 @@ Local OpenAI-compatible **router/proxy** (not a model server). Clients (Vibes, O
 | Config | YAML + `${ENV:-}` expansion | `config.yaml` gitignored; `config.example.yaml` public |
 | Affinity | Packaged `models.yaml` | Optional HF enrich; override via `models_path` |
 | Install | `install.ps1` / `install.sh` | One-liner from GitHub raw |
+| Optional run | Docker Compose | `Dockerfile` + `compose.yaml`; still needs host/LAN GPU URLs |
 | License | MIT | Stephen Phillips |
 
 ## Architecture decisions
