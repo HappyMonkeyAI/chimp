@@ -42,7 +42,7 @@ src/chimp/
 | P0 | Proxy + warm/cold placement + aliases | done |
 | P1 | Context expand + stream hold for clients | done |
 | P2 | Affinity map | done |
-| P3 | Secondary cloud tier + public MIT + installers | done (commit pending for install/docs) |
+| P3 | Secondary cloud tier + public MIT + installers | done |
 | P4 | Agents Protocol spine + Spine hook | done |
 | P4b | Optional Docker Compose packaging | done |
 | P5 | OpenBot `auto:<class>` + boot enrich (TASKS Wave 1–2) | done |

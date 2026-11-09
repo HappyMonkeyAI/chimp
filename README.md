@@ -143,7 +143,7 @@ Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/Agent
 | [`SPEC.md`](SPEC.md) | Acceptance criteria |
 | [`PLAN.md`](PLAN.md) | Architecture / phases |
 | [`TASKS.md`](TASKS.md) | Task board |
-| [`ROADMAP.md`](ROADMAP.md) | Future ideas (Electron desktop, sticky cache, …) |
+| [`ROADMAP.md`](ROADMAP.md) | Future ideas (Electron shell, AWQ demote, …); shipped Waves 1–6 marked there |
 | [`LINKS.md`](LINKS.md) | External research links |
 | [`docs/adr/`](docs/adr/) | Project ADRs |
 

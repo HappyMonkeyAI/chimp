@@ -5,11 +5,13 @@ Future work and product ideas. Not a delivery promise. Research links stay in [`
 ## Shipped (high level)
 
 - OpenAI-compatible local router with warm → expand → unknown → cold placement
-- Role aliases + packaged affinity map (`models.yaml`)
+- Role aliases + packaged affinity map (`models.yaml`); OpenBot `auto:<class>` + `chimpr/` prefix
+- Boot inventory enrich (`--no-enrich` / `CHIMP_NO_ENRICH`); sticky pins (ADR-0003); cloud cache field pass-through
+- Optional advisor for bare `auto` only; `GET /ui` + `/ui/config`; `scripts/open-status.ps1`
 - LM Studio context widen; stream hold for clients like OpenBot/Pi
 - `tier: secondary` cloud fallbacks (Groq / Mistral / LLM7)
 - Public MIT repo; gitignored local `config.yaml`; Windows/Linux install scripts
-- Optional Docker image + `compose.yaml` (native installers remain primary)
+- Optional Docker Compose; GHCR image `ghcr.io/happymonkeyai/chimp` (from `v0.1.0`)
 
 ## Near-term (router)
 
@@ -20,18 +22,17 @@ Future work and product ideas. Not a delivery promise. Research links stay in [`
 | OpenBot `auto:<class>` aliases | Explicit work-class in the model id (see below); easiest win vs content classifiers | shipped |
 | Startup inventory → affinity refresh | On boot (unless `--no-enrich`), rebuild/refresh live model tags from endpoints into affinity view | shipped |
 | Small-model / System One advisor | Optional classify among *legal* warm candidates only; never replace warm/busy/tier gates | shipped |
-| Status UI + GHCR image path | `GET /ui`, `scripts/open-status.ps1`, `ghcr.io/happymonkeyai/chimp` workflow | shipped |
+| Status UI + GHCR image path | `GET /ui`, `scripts/open-status.ps1`, `ghcr.io/happymonkeyai/chimp` | shipped |
+| Demote known-bad formats (e.g. broken AWQ peers) | Affinity/denylist so failover catalogs don’t prefer junk over GGUF | idea |
 | Exact response cache (narrow) | Optional; only for idempotent low-temp probes — not prompt caching | idea |
 
-### OpenBot work-classes (from live roster, 2026-11-09)
+### OpenBot work-classes (live roster remapped 2026-11-09)
 
-All 22 agents currently use `chimpr/auto`, so they share one affinity pool — that matches the “laptop coder / remote AgentWorld” pattern from curated `models.yaml`, not per-request intent.
-
-Proposed model ids OpenBot can set per agent (chimp aliases + affinity roles):
+All 22 desks use `chimpr/auto:<class>` (plain `auto` / `chimpr/auto` still valid). Classes only change affinity among legal candidates; warm → busy → tier gates stay first. When the laptop primary is down, traffic fails over to other healthy primaries (e.g. remote Unsloth) — pin a known-good GGUF if that catalog still lists broken AWQ builds.
 
 | Alias | Intent | Example agents |
 |---|---|---|
-| `auto` | Any warm chat (today’s behavior) | default / CEO when undecided |
+| `auto` | Any warm chat (today’s behavior) | default when undecided |
 | `auto:coder` | Code, PRs, bugs, security review | Software Engineer, Bug Fixer, PR Shepherd, Security Reviewer, Change Reviewer |
 | `auto:ops` | Builds, deploy, MCP, local wiring | Ops |
 | `auto:research` | Sourced answers, prospects, crypto desk | Research Desk, Prospect Researcher, Crypto Desk |
@@ -42,8 +43,6 @@ Proposed model ids OpenBot can set per agent (chimp aliases + affinity roles):
 | `auto:skills` | Skill/agent/routine design | Skill Smith, Dr. Eggbot |
 | `auto:assistant` | Calendar/inbox brief | Chief of Staff |
 | `auto:coord` | Multi-desk coordination | CEO |
-
-Implementation sketch: treat `auto:coder` like today’s `executor` role for affinity; list them from `/v1/models`; keep warm→busy→tier gates first.
 
 ## Product — desktop app
 
@@ -57,15 +56,14 @@ Possible scope (refine before building):
 - One-click start/stop; maybe “open OpenBot / Vibes base URL” helpers
 - Later: placement explain (`x-chimp-*` reasons), affinity tweaks UI
 
-Prerequisite called out in README: status API is already the data plane; a desktop UI can wait until that view is worth operating.
+`GET /ui` already covers the status dashboard; a tray/Electron host remains optional.
 
 ## Later / maybe
 
-- Web dashboard on the same status API (lighter than Electron)
 - GitHub Models path adapter (`/chat/completions` without `/v1`)
 - Broader free-provider catalog sync from local-ai-planner allowlist
 - Packaging: `winget` / Homebrew cask once install scripts prove out
-- Publish `ghcr.io/happymonkeyai/chimp` image (Compose currently builds locally)
+- Richer Electron tray (start/stop) beyond `scripts/open-status.ps1`
 
 ## How to use this file
 
