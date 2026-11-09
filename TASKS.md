@@ -79,4 +79,4 @@ Prefer web dashboard over Electron — shipped as `/ui`.
 
 ## Suggested next slice
 
-Operator: remap OpenBot desks to `auto:<class>` (T11e) and cut a `v*` tag to publish GHCR.
+Soak live class routing when multiple models are warm; optional backlog (exact response cache, GitHub Models adapter) only after that earns its keep.
