@@ -103,8 +103,12 @@ class Gate:
             return placement
 
     async def release(self, name: str) -> None:
-        async with self._lock:
-            self.inflight[name] = max(0, self.inflight.get(name, 0) - 1)
+        self.release_now(name)
+
+    def release_now(self, name: str) -> None:
+        # No await: safe to call from cancellation and finally paths.
+        # Acquire's lock only guards place()+increment, which never yields.
+        self.inflight[name] = max(0, self.inflight.get(name, 0) - 1)
 
 
 def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> Starlette:
@@ -453,22 +457,27 @@ async def _proxy(request: Request) -> Response:
             sticky.clear(sticky_key)
             sticky_pin = None
         model_id = placement.model_id
-        if placement.reason == "expand" and placement.context_target and placement.endpoint.name not in widened:
-            try:
-                model_id = await _widen_context(client, inventory, placement, placement.context_target)
-            except Exception as exc:
-                await gate.release(placement.endpoint.name)
-                exclude.add(placement.endpoint.name)
-                log.warning("could not widen context on %s: %s", placement.endpoint.name, exc)
-                continue
-            widened.add(placement.endpoint.name)
-        payload["model"] = model_id
-        _keep_cache_fields(payload)
-        if placement.endpoint.kind == "lmstudio":
-            try:
-                await _drop_smaller_siblings(client, inventory, placement.endpoint, model_id)
-            except Exception as exc:
-                log.warning("could not unload the smaller context on %s: %s", placement.endpoint.name, exc)
+        try:
+            if placement.reason == "expand" and placement.context_target and placement.endpoint.name not in widened:
+                try:
+                    model_id = await _widen_context(client, inventory, placement, placement.context_target)
+                except Exception as exc:
+                    gate.release_now(placement.endpoint.name)
+                    exclude.add(placement.endpoint.name)
+                    log.warning("could not widen context on %s: %s", placement.endpoint.name, exc)
+                    continue
+                widened.add(placement.endpoint.name)
+            payload["model"] = model_id
+            _keep_cache_fields(payload)
+            if placement.endpoint.kind == "lmstudio":
+                try:
+                    await _drop_smaller_siblings(client, inventory, placement.endpoint, model_id)
+                except Exception as exc:
+                    log.warning("could not unload the smaller context on %s: %s", placement.endpoint.name, exc)
+        except BaseException:
+            # Cancelled mid-load (shutdown, client gone): the slot must not leak.
+            gate.release_now(placement.endpoint.name)
+            raise
         reason = placement.reason
         if advisor_used and reason != "sticky":
             reason = f"{reason}+advisor"
@@ -560,16 +569,36 @@ async def _dispatch(
     stream_cm = client.stream("POST", url, headers=headers, json=payload)
     try:
         upstream = await stream_cm.__aenter__()
-    except Exception:
-        await gate.release(endpoint.name)
+    except BaseException:
+        gate.release_now(endpoint.name)
         raise
 
-    async def close_upstream() -> None:
-        try:
-            await stream_cm.__aexit__(None, None, None)
-        finally:
-            await gate.release(endpoint.name)
+    closed = False
 
+    async def close_upstream() -> None:
+        # Idempotent; the slot is freed before the await so cancellation cannot skip it.
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        gate.release_now(endpoint.name)
+        await stream_cm.__aexit__(None, None, None)
+
+    try:
+        return await _relay(upstream, placement, payload, reason, close_upstream, stream)
+    except BaseException:
+        await close_upstream()
+        raise
+
+
+async def _relay(
+    upstream: httpx.Response,
+    placement: Placement,
+    payload: dict[str, Any],
+    reason: str | None,
+    close_upstream,
+    stream: bool,
+) -> Response:
     response_headers = _response_headers(
         upstream,
         placement,
@@ -606,12 +635,9 @@ async def _dispatch(
             raise ContextOverflow(overflow)
 
         async def replay():
-            try:
-                yield body
-            finally:
-                await close_upstream()
+            yield body
 
-        return StreamingResponse(replay(), status_code=upstream.status_code, headers=response_headers)
+        return _ClosingStream(replay(), close_upstream, status_code=upstream.status_code, headers=response_headers)
 
     # Decoded bytes: content-encoding is not forwarded, so raw gzip would reach clients unlabelled.
     incoming = upstream.aiter_bytes()
@@ -633,7 +659,21 @@ async def _dispatch(
         finally:
             await close_upstream()
 
-    return StreamingResponse(chunks(), status_code=upstream.status_code, headers=response_headers)
+    return _ClosingStream(chunks(), close_upstream, status_code=upstream.status_code, headers=response_headers)
+
+
+class _ClosingStream(StreamingResponse):
+    """Free the upstream and its slot even if the body iterator never starts or is abandoned."""
+
+    def __init__(self, content, on_close, **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._on_close = on_close
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._on_close()
 
 
 async def _retry_wider(

@@ -549,3 +549,80 @@ async def test_unreachable_upstreams_do_not_leak_addresses():
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "upstream_unavailable"
     assert "10.0.0.7" not in response.text
+
+
+async def test_cancelling_during_a_context_widen_frees_the_slot():
+    loading = asyncio.Event()
+    never = asyncio.Event()
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v0/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "big",
+                            "type": "llm",
+                            "state": "loaded",
+                            "loaded_context_length": 4096,
+                            "max_context_length": 65536,
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/models/load":
+            loading.set()
+            await never.wait()
+        return httpx.Response(200, json={"choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("studio", "lmstudio", "http://studio", None, 1),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(settings, client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            task = asyncio.create_task(
+                api.post(
+                    "/v1/chat/completions",
+                    json={"model": "auto", "messages": [{"role": "user", "content": "x" * 8000}]},
+                )
+            )
+            await asyncio.wait_for(loading.wait(), timeout=2)
+            assert app.state.gate.inflight["studio"] == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert app.state.gate.inflight["studio"] == 0
+
+
+async def test_an_abandoned_stream_still_frees_the_slot():
+    from chimp.app import _ClosingStream
+
+    closed: list[bool] = []
+
+    async def on_close() -> None:
+        closed.append(True)
+
+    async def body():
+        yield b"data: hi\n\n"
+
+    async def send(_message) -> None:
+        raise OSError("client went away")
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    response = _ClosingStream(body(), on_close, media_type="text/event-stream")
+    with pytest.raises(Exception):  # Starlette may rewrap as ClientDisconnect
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert closed == [True]
