@@ -35,4 +35,4 @@ Each criterion is independently verifiable. Evidence: unit | integration | live.
 
 ## S6 — Quality gate
 
-- [x] `pytest` passes on a clean checkout with `[dev]` extras. *(V0 — 50 passed at Waves 1–6 / `v0.1.0`)*
+- [x] `pytest` passes on a clean checkout with `[dev]` extras. *(V0 — 50 passed at `v0.1.0`; 84 passed at `v0.2.0`)*
