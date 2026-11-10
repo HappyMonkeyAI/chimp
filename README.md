@@ -81,7 +81,7 @@ The `model` field is either a role alias (`executor`, `planner`, `auto:coder`, â
 2. If the loaded window is too small on LM Studio, widen that instance before answering.
 3. If loaded state is unknown (a plain OpenAI endpoint), use a free endpoint that lists the model.
 4. Load a matching model on a free endpoint only when nothing suitable is already warm.
-5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub. At boot, live inventory ids are scored once (`enrich_on_start`, skip with `--no-enrich` / `CHIMP_NO_ENRICH=1`); the periodic poll still refreshes reachability only.
+5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub. Those lookups run asynchronously after boot and after each poll, for repos not seen yet, and never during placement, so a slow Hub can't stall requests. A model's first few placements may score without hints. At boot, live inventory ids are scored once (`enrich_on_start`, skip with `--no-enrich` / `CHIMP_NO_ENRICH=1`).
 6. Sticky pins (ADR-0003) reuse the same warm endpoint+model for `prompt_cache_key`, `X-Chimp-Session`, or a stable message-prefix hash while the pin TTL holds and the slot is free.
 7. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
 8. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request. Cloud prompt-cache fields on the JSON body are forwarded as-is.

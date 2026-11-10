@@ -125,6 +125,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         await inventory.refresh_all()
+        await _prefetch_hints(settings, inventory, client)
         if settings.enrich_on_start:
             _seed_affinity_from_inventory(settings, inventory)
         stop = asyncio.Event()
@@ -135,6 +136,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
                     await asyncio.wait_for(stop.wait(), timeout=settings.poll_interval_seconds)
                 except TimeoutError:
                     await inventory.refresh_all()
+                    await _prefetch_hints(settings, inventory, client)
 
         task = asyncio.create_task(poll())
         try:
@@ -366,7 +368,7 @@ def _alias_sort_key(alias: Any) -> tuple[int, str]:
     return (2, name)
 
 
-def _seed_affinity_from_inventory(settings: Settings, inventory: Inventory) -> None:
+def _live_ids(inventory: Inventory) -> list[str]:
     ids: list[str] = []
     for snapshot in inventory.snapshots().values():
         if not snapshot.healthy:
@@ -374,6 +376,22 @@ def _seed_affinity_from_inventory(settings: Settings, inventory: Inventory) -> N
         for model in snapshot.models:
             if model.id not in ids:
                 ids.append(model.id)
+    return ids
+
+
+async def _prefetch_hints(settings: Settings, inventory: Inventory, client: httpx.AsyncClient) -> None:
+    """Hugging Face lookups happen here, off the placement path (place() never does I/O)."""
+    try:
+        fetched = await settings.affinity.prefetch_huggingface(client, _live_ids(inventory))
+    except Exception as exc:  # noqa: BLE001 — enrich is best-effort
+        log.warning("huggingface prefetch failed: %s", exc)
+        return
+    if fetched:
+        log.info("huggingface enrich: cached hints for %s new repos", fetched)
+
+
+def _seed_affinity_from_inventory(settings: Settings, inventory: Inventory) -> None:
+    ids = _live_ids(inventory)
     if not ids:
         log.info("affinity enrich: no live models yet")
         return
