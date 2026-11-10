@@ -63,6 +63,8 @@ class Settings:
     sticky_ttl_seconds: float = 1800.0
     advisor: AdvisorConfig = AdvisorConfig()
     config_path: Path | None = None
+    # Separate from api_key so every inference client is not also a config admin.
+    admin_key: str | None = None
 
 
 def expand_env(value: object) -> object:
@@ -104,6 +106,9 @@ def load_settings(path: Path) -> Settings:
     aliases = _parse_aliases(data.get("aliases") or {})
     aliases = _with_default_auto_classes(aliases)
     api_key = _blank_to_none(data.get("api_key"))
+    admin_key = _blank_to_none(data.get("admin_key"))
+    if admin_key is not None and admin_key == api_key:
+        raise ConfigError("admin_key must differ from api_key, or every inference client is an admin.")
     huggingface_enrich = bool(data.get("huggingface_enrich") or False)
     enrich_on_start = _enrich_on_start(data.get("enrich_on_start"))
     sticky = True if data.get("sticky") is None else bool(data.get("sticky"))
@@ -133,6 +138,7 @@ def load_settings(path: Path) -> Settings:
         sticky_ttl_seconds=sticky_ttl_seconds,
         advisor=advisor,
         config_path=path,
+        admin_key=admin_key,
     )
 
 

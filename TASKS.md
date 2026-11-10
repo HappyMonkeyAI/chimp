@@ -83,6 +83,7 @@ Prefer web dashboard over Electron — shipped as `/ui`.
 | R7 | Release inflight slot on `CancelledError` between acquire and dispatch | Unit test: cancelled widen leaves inflight 0 | S | done |
 | R8 | Small fixes: sticky expiry sweep, parallel probes, `x or default` config zeros, strip cookie + `x-chimp-*` + forwarding headers upstream (denylist, all tiers), drop `is_stream_consumed` branch | Per-item tests | M | done |
 | R9 | Re-probe an endpoint after a successful cold load | Unit test + live LM Studio: `cold` then `warm` with no poll between | S | done |
+| R10 | Separate `admin_key` for `/ui/config` read/write | Inference key gets 401 on config; no admin_key → 403; admin_key == api_key → ConfigError | S | done |
 
 ## Backlog (do not start until Waves 1–3 earn their keep)
 

@@ -4,6 +4,9 @@
 listen: 127.0.0.1:8787
 # Set CHIMP_API_KEY to require Authorization: Bearer on every route except /health.
 api_key: ${CHIMP_API_KEY:-}
+# Set CHIMP_ADMIN_KEY (different from CHIMP_API_KEY) to enable the /ui/config editor.
+# Inference clients holding api_key cannot read or rewrite config; unset means no config over HTTP.
+admin_key: ${CHIMP_ADMIN_KEY:-}
 poll_interval_seconds: 10
 request_timeout_seconds: 600
 # Optional path to a role-affinity map (defaults to the packaged models.yaml).

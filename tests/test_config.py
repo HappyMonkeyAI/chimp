@@ -90,3 +90,20 @@ def test_blank_env_placeholders_still_fall_back_to_defaults(tmp_path, monkeypatc
         encoding="utf-8",
     )
     assert load_settings(path).poll_interval_seconds == 10
+
+
+def test_admin_key_loads_and_must_differ_from_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHIMP_API_KEY", "same")
+    monkeypatch.setenv("CHIMP_ADMIN_KEY", "same")
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "api_key: ${CHIMP_API_KEY:-}\nadmin_key: ${CHIMP_ADMIN_KEY:-}\n"
+        "endpoints:\n  - name: a\n    kind: openai\n    base_url: http://x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="admin_key must differ"):
+        load_settings(path)
+    monkeypatch.setenv("CHIMP_ADMIN_KEY", "different")
+    assert load_settings(path).admin_key == "different"
+    monkeypatch.delenv("CHIMP_ADMIN_KEY")
+    assert load_settings(path).admin_key is None

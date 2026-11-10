@@ -226,16 +226,10 @@ async def _ui_config(request: Request) -> Response:
     if request.method == "GET":
         # Shell only; the YAML itself is fetched from /ui/config.yaml with a bearer token.
         return HTMLResponse(config_page_html())
-    denied = _authorize(request)
+    denied = _authorize_admin(request)
     if denied is not None:
         return denied
     settings: Settings = request.app.state.settings
-    if not settings.api_key:
-        return _error(
-            403,
-            "config_write_disabled",
-            "Set api_key in config.yaml to enable writes from /ui/config.",
-        )
     content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
     if content_type not in YAML_TYPES:
         # Rejects form posts, which browsers send cross-site without a preflight.
@@ -270,7 +264,8 @@ async def _ui_config(request: Request) -> Response:
 
 
 async def _ui_config_yaml(request: Request) -> Response:
-    denied = _authorize(request)
+    # Admin only: the file may hold inline upstream keys.
+    denied = _authorize_admin(request)
     if denied is not None:
         return denied
     path = request.app.state.settings.config_path
@@ -854,13 +849,33 @@ def _response_headers(
 
 
 def _authorize(request: Request) -> JSONResponse | None:
-    expected = request.app.state.settings.api_key
-    if not expected:
+    """Inference / status routes: api_key, or admin_key (a superset)."""
+    settings: Settings = request.app.state.settings
+    if not settings.api_key:
         return None
     provided = _bearer(request.headers.get("authorization"))
-    if provided is None or not hmac.compare_digest(provided, expected):
-        return _error(401, "unauthorized", "Missing or invalid bearer token.")
+    if provided is not None and any(_matches(provided, key) for key in (settings.api_key, settings.admin_key)):
+        return None
+    return _error(401, "unauthorized", "Missing or invalid bearer token.")
+
+
+def _authorize_admin(request: Request) -> JSONResponse | None:
+    """Config read/write: admin_key only. No admin_key configured means no config access over HTTP."""
+    settings: Settings = request.app.state.settings
+    if not settings.admin_key:
+        return _error(
+            403,
+            "config_access_disabled",
+            "Set admin_key in config.yaml (separate from api_key) to use /ui/config.",
+        )
+    provided = _bearer(request.headers.get("authorization"))
+    if provided is None or not _matches(provided, settings.admin_key):
+        return _error(401, "unauthorized", "Config access needs the admin_key bearer token.")
     return None
+
+
+def _matches(provided: str, expected: str | None) -> bool:
+    return bool(expected) and hmac.compare_digest(provided.encode(), expected.encode())
 
 
 def _bearer(header: str | None) -> str | None:

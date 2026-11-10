@@ -125,7 +125,7 @@ async def config_api(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(_GOOD_YAML, encoding="utf-8")
 
-    async def make(api_key: str | None):
+    async def make(api_key: str | None, admin_key: str | None = "admin-secret"):
         from chimp.config import load_settings
 
         loaded = load_settings(path)
@@ -140,6 +140,7 @@ async def config_api(tmp_path):
             affinity=loaded.affinity,
             enrich_on_start=False,
             config_path=path,
+            admin_key=admin_key,
         )
         upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
         app = build_app(settings, client=upstream)
@@ -152,12 +153,16 @@ async def _with_app(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp")
 
 
-async def test_ui_config_saves_valid_yaml_with_the_router_key(config_api):
+def _admin() -> dict[str, str]:
+    return {"authorization": "Bearer admin-secret"}
+
+
+async def test_ui_config_reads_and_saves_with_the_admin_key(config_api):
     path, make = config_api
     app = await make("router-secret")
     async with app.router.lifespan_context(app):
         async with await _with_app(app) as api:
-            raw = await api.get("/ui/config.yaml", headers=_auth())
+            raw = await api.get("/ui/config.yaml", headers=_admin())
             assert raw.status_code == 200
             assert "box" in raw.text
             assert (await api.get("/ui/config.yaml")).status_code == 401
@@ -167,40 +172,49 @@ async def test_ui_config_saves_valid_yaml_with_the_router_key(config_api):
             saved = await api.post(
                 "/ui/config",
                 content=edited,
-                headers={**_auth(), "content-type": "text/yaml"},
+                headers={**_admin(), "content-type": "text/yaml"},
             )
             assert saved.status_code == 200
             assert "edited" in path.read_text(encoding="utf-8")
             assert raw.headers["x-chimp-config-path"] == "config.yaml"
             assert str(path.parent) not in saved.text
+            # The admin key is a superset: it also opens the status data.
+            assert (await api.get("/status", headers=_admin())).status_code == 200
     assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
 
 
-async def test_ui_config_refuses_writes_without_a_router_key(config_api):
-    path, make = config_api
-    app = await make(None)
-    async with app.router.lifespan_context(app):
-        async with await _with_app(app) as api:
-            response = await api.post(
-                "/ui/config",
-                content=_GOOD_YAML.replace("box", "evil"),
-                headers={"content-type": "text/yaml"},
-            )
-            assert response.status_code == 403
-    assert "evil" not in path.read_text(encoding="utf-8")
-
-
-async def test_ui_config_rejects_cross_site_form_posts(config_api):
+async def test_the_inference_key_cannot_read_or_write_config(config_api):
     path, make = config_api
     app = await make("router-secret")
     async with app.router.lifespan_context(app):
         async with await _with_app(app) as api:
+            assert (await api.get("/ui/config.yaml", headers=_auth())).status_code == 401
             response = await api.post(
                 "/ui/config",
-                content="body=" + _GOOD_YAML.replace("box", "evil"),
-                headers={**_auth(), "content-type": "application/x-www-form-urlencoded"},
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**_auth(), "content-type": "text/yaml"},
             )
-            assert response.status_code == 415
+            assert response.status_code == 401
+            assert (await api.post("/v1/chat/completions", headers=_admin(), json={"messages": []})).status_code != 401
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("api_key", ["router-secret", None])
+async def test_ui_config_is_disabled_without_an_admin_key(config_api, api_key):
+    path, make = config_api
+    app = await make(api_key, admin_key=None)
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            headers = _auth() if api_key else {}
+            read = await api.get("/ui/config.yaml", headers=headers)
+            assert read.status_code == 403
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**headers, "content-type": "text/yaml"},
+            )
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "config_access_disabled"
     assert "evil" not in path.read_text(encoding="utf-8")
 
 
@@ -213,7 +227,7 @@ async def test_ui_config_rejects_every_cors_simple_content_type(config_api, cont
             response = await api.post(
                 "/ui/config",
                 content=_GOOD_YAML.replace("box", "evil"),
-                headers={**_auth(), "content-type": content_type},
+                headers={**_admin(), "content-type": content_type},
             )
             assert response.status_code == 415
     assert "evil" not in path.read_text(encoding="utf-8")
@@ -232,7 +246,7 @@ async def test_ui_config_keeps_the_old_file_when_the_new_one_is_invalid(config_a
     app = await make("router-secret")
     async with app.router.lifespan_context(app):
         async with await _with_app(app) as api:
-            response = await api.post("/ui/config", content=bad, headers={**_auth(), "content-type": "text/yaml"})
+            response = await api.post("/ui/config", content=bad, headers={**_admin(), "content-type": "text/yaml"})
             assert response.status_code == 400
             assert response.json()["error"]["code"] == "invalid_config"
     assert path.read_text(encoding="utf-8") == _GOOD_YAML

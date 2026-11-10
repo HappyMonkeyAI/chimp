@@ -46,7 +46,7 @@ def config_page_html() -> str:
   <main>
     <p><a id="back" href="/ui">← status</a></p>
     <h1>config.yaml</h1>
-    <p class="meta">File: <code id="path">…</code>. Saves the gitignored local file after it validates. Restart chimp to apply. Writes need <code>api_key</code> set; open this page as <code>/ui/config#key=…</code>. Do not commit secrets.</p>
+    <p class="meta">File: <code id="path">…</code>. Saves the gitignored local file after it validates. Restart chimp to apply. Reading and saving need the separate <code>admin_key</code> (not the inference <code>api_key</code>); open this page as <code>/ui/config#key=&lt;admin_key&gt;</code>. Do not commit secrets.</p>
     <p id="note"></p>
     <form id="cfg">
       <textarea id="body" spellcheck="false" placeholder="Loading…"></textarea>
@@ -210,7 +210,7 @@ def status_page_html() -> str:
     </section>
     <section>
       <h2>Config</h2>
-      <p class="meta">Edit gitignored <code>config.yaml</code> at <a id="config-link" href="/ui/config">/ui/config</a> (restart required). Prefer env placeholders for keys.</p>
+      <p class="meta">Edit gitignored <code>config.yaml</code> at <a id="config-link" href="/ui/config">/ui/config</a> (needs <code>admin_key</code>; restart required). Prefer env placeholders for keys.</p>
     </section>
   </main>
   <script>{_AUTH_JS}
