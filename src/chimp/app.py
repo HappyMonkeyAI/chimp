@@ -217,7 +217,8 @@ async def _ui(_request: Request) -> Response:
     return Response(status_page_html(), media_type="text/html; charset=utf-8")
 
 
-YAML_TYPES = ("text/yaml", "application/yaml", "application/x-yaml", "text/plain")
+# Only types that force a CORS preflight: text/plain is a "simple" type browsers send cross-site.
+YAML_TYPES = ("text/yaml", "application/yaml", "application/x-yaml")
 MAX_CONFIG_BYTES = 256 * 1024
 
 
@@ -260,10 +261,12 @@ async def _ui_config(request: Request) -> Response:
             return _error(400, "invalid_config", f"Not saved: YAML did not parse: {exc}")
         tmp.replace(path)
     except OSError as exc:
-        return _error(500, "config_write_failed", f"Could not write {path}: {exc}")
+        log.warning("could not write config %s: %s", path, exc)
+        return _error(500, "config_write_failed", f"Could not write {path.name}; see the chimp log.")
     finally:
         tmp.unlink(missing_ok=True)
-    return JSONResponse({"saved": str(path), "message": f"Saved {path}. Restart chimp to apply."})
+    # File name only: the host path is server layout, not something clients need.
+    return JSONResponse({"saved": path.name, "message": f"Saved {path.name}. Restart chimp to apply."})
 
 
 async def _ui_config_yaml(request: Request) -> Response:
@@ -276,11 +279,12 @@ async def _ui_config_yaml(request: Request) -> Response:
     try:
         body = path.read_text(encoding="utf-8")
     except OSError as exc:
-        return _error(500, "config_read_failed", f"Could not read {path}: {exc}")
+        log.warning("could not read config %s: %s", path, exc)
+        return _error(500, "config_read_failed", f"Could not read {path.name}; see the chimp log.")
     return Response(
         body,
         media_type="text/yaml; charset=utf-8",
-        headers={"x-chimp-config-path": str(path), "cache-control": "no-store"},
+        headers={"x-chimp-config-path": path.name, "cache-control": "no-store"},
     )
 
 
@@ -558,7 +562,13 @@ async def _proxy(request: Request) -> Response:
             # The upstream may already be generating; retrying elsewhere would duplicate GPU work.
             sticky.clear(sticky_key)
             log.warning("upstream %s failed mid-request: %r", placement.endpoint.name, exc)
-            return _error(502, "upstream_failed", f"Upstream {placement.endpoint.name!r} failed mid-request.")
+            # Generic body; the endpoint goes in the same header successful responses carry.
+            return _error(
+                502,
+                "upstream_failed",
+                "Upstream failed mid-request.",
+                headers={"x-chimp-endpoint": placement.endpoint.name},
+            )
 
 
 def _remember(
@@ -862,8 +872,10 @@ def _bearer(header: str | None) -> str | None:
     return token.strip()
 
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    headers = {"retry-after": "2"} if status == 429 else None
+def _error(status: int, code: str, message: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    headers = dict(headers or {})
+    if status == 429:
+        headers["retry-after"] = "2"
     return JSONResponse(
         {"error": {"message": message, "type": code, "code": code}},
         status_code=status,

@@ -51,7 +51,7 @@ class Inventory:
     async def refresh_all(self) -> None:
         # In parallel: each unreachable endpoint costs up to PROBE_TIMEOUT, not N of them.
         snapshots = await asyncio.gather(*(self.probe(endpoint) for endpoint in self._endpoints))
-        for endpoint, snapshot in zip(self._endpoints, snapshots):
+        for endpoint, snapshot in zip(self._endpoints, snapshots, strict=True):
             previous = self._snapshots.get(endpoint.name)
             self._snapshots[endpoint.name] = snapshot
             if previous is None or previous.healthy != snapshot.healthy:

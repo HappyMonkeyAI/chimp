@@ -171,6 +171,8 @@ async def test_ui_config_saves_valid_yaml_with_the_router_key(config_api):
             )
             assert saved.status_code == 200
             assert "edited" in path.read_text(encoding="utf-8")
+            assert raw.headers["x-chimp-config-path"] == "config.yaml"
+            assert str(path.parent) not in saved.text
     assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
 
 
@@ -197,6 +199,21 @@ async def test_ui_config_rejects_cross_site_form_posts(config_api):
                 "/ui/config",
                 content="body=" + _GOOD_YAML.replace("box", "evil"),
                 headers={**_auth(), "content-type": "application/x-www-form-urlencoded"},
+            )
+            assert response.status_code == 415
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("content_type", ["application/x-www-form-urlencoded", "text/plain", "multipart/form-data"])
+async def test_ui_config_rejects_every_cors_simple_content_type(config_api, content_type):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**_auth(), "content-type": content_type},
             )
             assert response.status_code == 415
     assert "evil" not in path.read_text(encoding="utf-8")
@@ -525,6 +542,8 @@ async def test_a_read_timeout_is_not_replayed_on_another_endpoint():
             )
             assert response.status_code == 502
             assert response.json()["error"]["code"] == "upstream_failed"
+            assert "warm" not in response.json()["error"]["message"]
+            assert response.headers["x-chimp-endpoint"] == "warm"
             assert hits == ["warm"]
             status = await api.get("/status", headers=_auth())
             inflight = {item["name"]: item["inflight"] for item in status.json()["endpoints"]}

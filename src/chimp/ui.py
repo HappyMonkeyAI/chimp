@@ -46,7 +46,7 @@ def config_page_html() -> str:
   <main>
     <p><a id="back" href="/ui">← status</a></p>
     <h1>config.yaml</h1>
-    <p class="meta">Path: <code id="path">…</code>. Saves the gitignored local file after it validates. Restart chimp to apply. Writes need <code>api_key</code> set; open this page as <code>/ui/config#key=…</code>. Do not commit secrets.</p>
+    <p class="meta">File: <code id="path">…</code>. Saves the gitignored local file after it validates. Restart chimp to apply. Writes need <code>api_key</code> set; open this page as <code>/ui/config#key=…</code>. Do not commit secrets.</p>
     <p id="note"></p>
     <form id="cfg">
       <textarea id="body" spellcheck="false" placeholder="Loading…"></textarea>
