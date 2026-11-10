@@ -53,6 +53,7 @@ PROXY_PATHS = {
     "/v1/responses": "chat",
     "/v1/embeddings": "embedding",
 }
+PRIVATE_HEADERS = frozenset({"cookie", "x-forwarded-for", "x-real-ip", "forwarded"})
 # Errors raised before the upstream could have received the request body.
 FAILOVER_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 HOP_BY_HOP = {
@@ -564,7 +565,7 @@ def _live_chat_ids(inventory: Inventory) -> list[str]:
 
 
 def _keep_cache_fields(payload: dict[str, Any]) -> None:
-    """No-op marker: cache knobs stay on the payload; callers must not delete them."""
+    """Cache knobs stay on the payload (T6); only explicit nulls are dropped so upstreams don't reject them."""
     for key in CACHE_BODY_KEYS:
         if key in payload and payload[key] is None:
             del payload[key]
@@ -645,19 +646,7 @@ async def _relay(
             raise ContextOverflow(overflow)
         return Response(body, status_code=upstream.status_code, headers=response_headers, media_type=media or None)
 
-    if upstream.is_stream_consumed:
-        body = upstream.content
-        overflow = overflow_tokens(body)
-        if overflow is not None:
-            await close_upstream()
-            raise ContextOverflow(overflow)
-
-        async def replay():
-            yield body
-
-        return _ClosingStream(replay(), close_upstream, status_code=upstream.status_code, headers=response_headers)
-
-    # Decoded bytes: content-encoding is not forwarded, so raw gzip would reach clients unlabelled.
+    # Decoded bytes (also replays an already-read body, as mock transports produce): content-encoding is not forwarded, so raw gzip would reach clients unlabelled.
     incoming = upstream.aiter_bytes()
     try:
         first = await anext(incoming)
@@ -793,7 +782,13 @@ async def _unload_instance(client: httpx.AsyncClient, endpoint: EndpointConfig, 
 
 
 def _forward_headers(request: Request, api_key: str | None) -> dict[str, str]:
-    headers = {key: value for key, value in request.headers.items() if key.lower() not in HOP_BY_HOP}
+    # Cookies and chimp's own control headers are for chimp only, never for an upstream
+    # (secondary tier is a third-party cloud API).
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in HOP_BY_HOP and key.lower() not in PRIVATE_HEADERS and not key.lower().startswith("x-chimp-")
+    }
     headers.update(auth_headers(api_key))
     headers["content-type"] = "application/json"
     # We do not forward content-encoding, so ask upstream for plain bytes.

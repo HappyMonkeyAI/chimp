@@ -626,3 +626,36 @@ async def test_an_abandoned_stream_still_frees_the_slot():
     with pytest.raises(Exception):  # Starlette may rewrap as ClientDisconnect
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
     assert closed == [True]
+
+
+async def test_cookies_and_chimp_headers_are_not_forwarded_upstream():
+    seen: dict[str, str] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": request.url.host == "warm"}]})
+        seen.update(request.headers)
+        return httpx.Response(200, json={"choices": []})
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers={
+                    **_auth(),
+                    "cookie": "session=secret",
+                    "x-chimp-session": "s1",
+                    "x-chimp-role": "executor",
+                    "x-forwarded-for": "10.0.0.9",
+                    "openai-beta": "assistants=v2",
+                },
+                json={"model": "executor", "messages": []},
+            )
+    assert response.status_code == 200
+    assert "cookie" not in seen
+    assert not any(key.startswith("x-chimp-") for key in seen)
+    assert "x-forwarded-for" not in seen
+    assert seen["openai-beta"] == "assistants=v2"
+    assert seen["authorization"] == "Bearer upstream-warm"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -48,8 +49,9 @@ class Inventory:
         self._snapshots[snapshot.name] = snapshot
 
     async def refresh_all(self) -> None:
-        for endpoint in self._endpoints:
-            snapshot = await self.probe(endpoint)
+        # In parallel: each unreachable endpoint costs up to PROBE_TIMEOUT, not N of them.
+        snapshots = await asyncio.gather(*(self.probe(endpoint) for endpoint in self._endpoints))
+        for endpoint, snapshot in zip(self._endpoints, snapshots):
             previous = self._snapshots.get(endpoint.name)
             self._snapshots[endpoint.name] = snapshot
             if previous is None or previous.healthy != snapshot.healthy:

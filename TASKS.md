@@ -81,7 +81,7 @@ Prefer web dashboard over Electron — shipped as `/ui`.
 | R5 | Fail over only on connect errors; don't retry `ReadTimeout`; generic 502 text | Unit test: read timeout → 502, no second endpoint hit | S | done |
 | R6 | HF enrich off the placement path (no sync `httpx.get` under the gate lock) | `place()` does no I/O | M | done |
 | R7 | Release inflight slot on `CancelledError` between acquire and dispatch | Unit test: cancelled widen leaves inflight 0 | S | done |
-| R8 | Small fixes: sticky expiry sweep, parallel probes, `x or default` config zeros, header allowlist for secondary, drop `is_stream_consumed` branch | Per-item tests | M | todo |
+| R8 | Small fixes: sticky expiry sweep, parallel probes, `x or default` config zeros, strip cookie + `x-chimp-*` + forwarding headers upstream (denylist, all tiers), drop `is_stream_consumed` branch | Per-item tests | M | done |
 
 ## Backlog (do not start until Waves 1–3 earn their keep)
 

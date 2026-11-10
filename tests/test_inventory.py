@@ -51,3 +51,27 @@ def test_llamaswap_running_list_marks_ready_models():
 def test_legacy_running_object():
     assert parse_running({"model": "coder", "state": "ready"}) == {"coder": "ready"}
     assert parse_running({}) == {}
+
+
+async def test_refresh_probes_endpoints_in_parallel():
+    import asyncio
+    import time
+
+    import httpx
+
+    from chimp.config import EndpointConfig
+    from chimp.inventory import Inventory
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return httpx.Response(200, json={"data": [{"id": request.url.host}]})
+
+    endpoints = tuple(EndpointConfig(f"e{i}", "openai", f"http://e{i}", None) for i in range(4))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as client:
+        inventory = Inventory(endpoints, client)
+        started = time.perf_counter()
+        await inventory.refresh_all()
+        elapsed = time.perf_counter() - started
+    assert elapsed < 0.9  # serial would be ~1.2 s
+    assert sorted(inventory.snapshots()) == ["e0", "e1", "e2", "e3"]
+    assert inventory.snapshots()["e2"].models[0].id == "e2"

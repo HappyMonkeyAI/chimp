@@ -107,9 +107,7 @@ def load_settings(path: Path) -> Settings:
     huggingface_enrich = bool(data.get("huggingface_enrich") or False)
     enrich_on_start = _enrich_on_start(data.get("enrich_on_start"))
     sticky = True if data.get("sticky") is None else bool(data.get("sticky"))
-    sticky_ttl_seconds = float(data.get("sticky_ttl_seconds") or 1800)
-    if sticky_ttl_seconds < 1:
-        raise ConfigError("sticky_ttl_seconds must be at least 1.")
+    sticky_ttl_seconds = _number(data.get("sticky_ttl_seconds"), 1800.0, "sticky_ttl_seconds", minimum=1)
     advisor = _parse_advisor(data.get("advisor"))
     affinity_path = _optional_path(data.get("models_path"), path.parent)
     from chimp.affinity import load_affinity
@@ -122,8 +120,10 @@ def load_settings(path: Path) -> Settings:
         listen_host=host,
         listen_port=port,
         api_key=api_key,
-        poll_interval_seconds=float(data.get("poll_interval_seconds") or 10),
-        request_timeout_seconds=float(data.get("request_timeout_seconds") or 600),
+        poll_interval_seconds=_number(data.get("poll_interval_seconds"), 10.0, "poll_interval_seconds", minimum=1),
+        request_timeout_seconds=_number(
+            data.get("request_timeout_seconds"), 600.0, "request_timeout_seconds", minimum=1
+        ),
         endpoints=endpoints,
         aliases=aliases,
         affinity=affinity,
@@ -162,9 +162,10 @@ def _parse_endpoint(item: object) -> EndpointConfig:
         raise ConfigError(f"Endpoint {name!r} kind must be one of {sorted(KINDS)}.")
     if not base_url:
         raise ConfigError(f"Endpoint {name!r} needs a base_url.")
-    max_concurrent = int(item.get("max_concurrent") or 1)
-    if max_concurrent < 1:
-        raise ConfigError(f"Endpoint {name!r} max_concurrent must be at least 1.")
+    concurrency = _number(item.get("max_concurrent"), 1, f"Endpoint {name!r} max_concurrent", minimum=1)
+    if not concurrency.is_integer():
+        raise ConfigError(f"Endpoint {name!r} max_concurrent must be a whole number.")
+    max_concurrent = int(concurrency)
     tier = str(item.get("tier") or "primary").strip().lower()
     if tier not in TIERS:
         raise ConfigError(f"Endpoint {name!r} tier must be one of {sorted(TIERS)}.")
@@ -233,7 +234,7 @@ def _parse_advisor(raw: object) -> AdvisorConfig:
     if base_url:
         base_url = _normalize_base_url(base_url)
     enabled = bool(raw.get("enabled")) if raw.get("enabled") is not None else bool(base_url)
-    timeout = float(raw.get("timeout_seconds") or 2)
+    timeout = _number(raw.get("timeout_seconds"), 2.0, "advisor.timeout_seconds")
     if timeout <= 0:
         raise ConfigError("advisor.timeout_seconds must be positive.")
     model = str(raw.get("model") or "auto").strip() or "auto"
@@ -244,6 +245,21 @@ def _parse_advisor(raw: object) -> AdvisorConfig:
         api_key=_blank_to_none(raw.get("api_key")),
         timeout_seconds=timeout,
     )
+
+
+def _number(value: object, default: float, label: str, minimum: float | None = None) -> float:
+    """Blank means default; an explicit 0 or junk is an error, never silently the default."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, bool):
+        raise ConfigError(f"{label} must be a number, got {value!r}.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{label} must be a number, got {value!r}.") from exc
+    if minimum is not None and number < minimum:
+        raise ConfigError(f"{label} must be at least {minimum:g}, got {number:g}.")
+    return number
 
 
 def _as_list(value: object, label: str) -> list[object]:
