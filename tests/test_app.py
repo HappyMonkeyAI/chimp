@@ -501,3 +501,51 @@ async def test_advisor_still_steers_unpinned_bare_auto():
     assert response.headers["x-chimp-model"] == "chat-a"
     assert response.headers["x-chimp-reason"] == "warm+advisor"
     assert calls == ["/v1/chat/completions"]
+
+
+async def test_a_read_timeout_is_not_replayed_on_another_endpoint():
+    hits: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": request.url.host == "warm"}]})
+        hits.append(request.url.host)
+        if request.url.host == "warm":
+            raise httpx.ReadTimeout("upstream is still generating")
+        return httpx.Response(200, json={"choices": []})
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers=_auth(),
+                json={"model": "executor", "messages": []},
+            )
+            assert response.status_code == 502
+            assert response.json()["error"]["code"] == "upstream_failed"
+            assert hits == ["warm"]
+            status = await api.get("/status", headers=_auth())
+            inflight = {item["name"]: item["inflight"] for item in status.json()["endpoints"]}
+            assert inflight == {"warm": 0, "cold": 0}
+
+
+async def test_unreachable_upstreams_do_not_leak_addresses():
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": True}]})
+        raise httpx.ConnectError("connect to 10.0.0.7:8888 refused")
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers=_auth(),
+                json={"model": "executor", "messages": []},
+            )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_unavailable"
+    assert "10.0.0.7" not in response.text

@@ -53,6 +53,8 @@ PROXY_PATHS = {
     "/v1/responses": "chat",
     "/v1/embeddings": "embedding",
 }
+# Errors raised before the upstream could have received the request body.
+FAILOVER_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -443,7 +445,8 @@ async def _proxy(request: Request) -> Response:
                 sticky.clear(sticky_key)
                 sticky_pin = None
             if last_transport is not None:
-                return _error(502, "upstream_unavailable", f"Upstream connection failed: {last_transport}")
+                # Details are logged; clients get no internal hostnames or addresses.
+                return _error(502, "upstream_unavailable", "No upstream could be reached.")
             return _error(exc.status, exc.code, exc.message)
         if sticky_pin is not None and placement.reason != "sticky" and placement.endpoint.name != sticky_pin.endpoint:
             # Pin missed (busy/unavailable) — drop so the next turn can re-pin.
@@ -488,11 +491,17 @@ async def _proxy(request: Request) -> Response:
                 continue
             exclude.add(placement.endpoint.name)
             log.warning("%s context still too small for %s tokens", placement.endpoint.name, overflow.tokens)
-        except httpx.TransportError as exc:
+        except FAILOVER_ERRORS as exc:
+            # The request never reached the upstream, so another endpoint may take it.
             exclude.add(placement.endpoint.name)
             sticky.clear_endpoint(placement.endpoint.name)
             last_transport = exc
-            log.warning("upstream %s failed before a response: %s", placement.endpoint.name, exc)
+            log.warning("upstream %s unreachable, failing over: %s", placement.endpoint.name, exc)
+        except httpx.TransportError as exc:
+            # The upstream may already be generating; retrying elsewhere would duplicate GPU work.
+            sticky.clear(sticky_key)
+            log.warning("upstream %s failed mid-request: %r", placement.endpoint.name, exc)
+            return _error(502, "upstream_failed", f"Upstream {placement.endpoint.name!r} failed mid-request.")
 
 
 def _remember(
