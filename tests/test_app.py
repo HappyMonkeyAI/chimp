@@ -106,45 +106,151 @@ async def test_ui_and_status_include_sticky(client):
     assert body["advisor"]["enabled"] is False
 
 
-async def test_ui_config_saves_gitignored_yaml(tmp_path, monkeypatch):
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        """
-endpoints:
-  - name: box
-    kind: openai
-    base_url: http://127.0.0.1:9
-""",
-        encoding="utf-8",
-    )
-    from chimp.config import load_settings
+async def test_ui_shell_loads_without_a_header_while_status_stays_locked(client):
+    api, _hold, _started = client
+    ui = await api.get("/ui")
+    assert ui.status_code == 200
+    assert b"location.hash" in ui.content
+    assert (await api.get("/status")).status_code == 401
+    page = await api.get("/ui/config")
+    assert page.status_code == 200
+    assert b"/ui/config.yaml" in page.content
 
-    settings = load_settings(path)
-    settings = Settings(
-        listen_host=settings.listen_host,
-        listen_port=settings.listen_port,
-        api_key=None,
-        poll_interval_seconds=3600,
-        request_timeout_seconds=30,
-        endpoints=settings.endpoints,
-        aliases=settings.aliases,
-        affinity=settings.affinity,
-        config_path=path,
-    )
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
-    app = build_app(settings, client=upstream)
+
+_GOOD_YAML = "endpoints:\n  - name: box\n    kind: openai\n    base_url: http://127.0.0.1:9\n"
+
+
+@pytest.fixture
+async def config_api(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_GOOD_YAML, encoding="utf-8")
+
+    async def make(api_key: str | None, admin_key: str | None = "admin-secret"):
+        from chimp.config import load_settings
+
+        loaded = load_settings(path)
+        settings = Settings(
+            listen_host=loaded.listen_host,
+            listen_port=loaded.listen_port,
+            api_key=api_key,
+            poll_interval_seconds=3600,
+            request_timeout_seconds=30,
+            endpoints=loaded.endpoints,
+            aliases=loaded.aliases,
+            affinity=loaded.affinity,
+            enrich_on_start=False,
+            config_path=path,
+            admin_key=admin_key,
+        )
+        upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
+        app = build_app(settings, client=upstream)
+        return app
+
+    return path, make
+
+
+async def _with_app(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp")
+
+
+def _admin() -> dict[str, str]:
+    return {"authorization": "Bearer admin-secret"}
+
+
+async def test_ui_config_reads_and_saves_with_the_admin_key(config_api):
+    path, make = config_api
+    app = await make("router-secret")
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
-            page = await api.get("/ui/config")
-            assert page.status_code == 200
-            assert b"box" in page.content
+        async with await _with_app(app) as api:
+            raw = await api.get("/ui/config.yaml", headers=_admin())
+            assert raw.status_code == 200
+            assert "box" in raw.text
+            assert (await api.get("/ui/config.yaml")).status_code == 401
+            edited = _GOOD_YAML.replace("box", "edited")
+            denied = await api.post("/ui/config", content=edited, headers={"content-type": "text/yaml"})
+            assert denied.status_code == 401
             saved = await api.post(
                 "/ui/config",
-                content="endpoints:\n  - name: edited\n    kind: openai\n    base_url: http://127.0.0.1:9\n",
-                headers={"content-type": "text/yaml"},
+                content=edited,
+                headers={**_admin(), "content-type": "text/yaml"},
             )
             assert saved.status_code == 200
             assert "edited" in path.read_text(encoding="utf-8")
+            assert raw.headers["x-chimp-config-path"] == "config.yaml"
+            assert str(path.parent) not in saved.text
+            # The admin key is a superset: it also opens the status data.
+            assert (await api.get("/status", headers=_admin())).status_code == 200
+    assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
+
+
+async def test_the_inference_key_cannot_read_or_write_config(config_api):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            assert (await api.get("/ui/config.yaml", headers=_auth())).status_code == 401
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**_auth(), "content-type": "text/yaml"},
+            )
+            assert response.status_code == 401
+            assert (await api.post("/v1/chat/completions", headers=_admin(), json={"messages": []})).status_code != 401
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("api_key", ["router-secret", None])
+async def test_ui_config_is_disabled_without_an_admin_key(config_api, api_key):
+    path, make = config_api
+    app = await make(api_key, admin_key=None)
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            headers = _auth() if api_key else {}
+            read = await api.get("/ui/config.yaml", headers=headers)
+            assert read.status_code == 403
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**headers, "content-type": "text/yaml"},
+            )
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "config_access_disabled"
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("content_type", ["application/x-www-form-urlencoded", "text/plain", "multipart/form-data"])
+async def test_ui_config_rejects_every_cors_simple_content_type(config_api, content_type):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={**_admin(), "content-type": content_type},
+            )
+            assert response.status_code == 415
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "endpoints: [\n",  # YAML syntax
+        "endpoints:\n  - name: box\n    kind: nope\n    base_url: http://x\n",  # ConfigError
+        "endpoints:\n  - name: box\n    kind: openai\n    base_url: http://x\n    max_concurrent: lots\n",  # ValueError
+    ],
+)
+async def test_ui_config_keeps_the_old_file_when_the_new_one_is_invalid(config_api, bad):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post("/ui/config", content=bad, headers={**_admin(), "content-type": "text/yaml"})
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "invalid_config"
+    assert path.read_text(encoding="utf-8") == _GOOD_YAML
+    assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
 
 
 async def test_second_request_cold_loads_when_the_warm_slot_is_held(client):
@@ -293,3 +399,346 @@ async def test_streamed_chunks_reach_the_client_intact():
         server.close()
         await server.wait_closed()
         await upstream.aclose()
+
+
+async def test_gzipped_upstream_stream_reaches_the_client_decoded():
+    import gzip
+
+    seen: dict[str, bytes] = {}
+    sse = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    packed = gzip.compress(sse)
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += await reader.read(4096)
+        head, _, rest = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+            if line.lower().startswith(b"accept-encoding:"):
+                seen["accept-encoding"] = line.split(b":", 1)[1].strip()
+        while len(rest) < length:
+            rest += await reader.read(4096)
+        if head.startswith(b"GET"):
+            payload = b'{"object":"list","data":[{"id":"coder","loaded":true}]}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+        else:
+            # Misbehaving upstream: compresses even when asked for identity.
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Encoding: gzip\r\nContent-Length: "
+                + str(len(packed)).encode()
+                + b"\r\n\r\n"
+                + packed
+            )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    upstream = httpx.AsyncClient()
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("cloud", "openai", f"http://127.0.0.1:{port}", None, 1, "secondary"),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    app = build_app(settings, client=upstream)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+                async with api.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    headers={"accept-encoding": "gzip"},
+                    json={"model": "auto", "stream": True, "messages": []},
+                ) as response:
+                    assert response.status_code == 200
+                    assert "content-encoding" not in response.headers
+                    body = await response.aread()
+        assert body == sse
+        assert seen["accept-encoding"] == b"identity"
+    finally:
+        server.close()
+        await server.wait_closed()
+        await upstream.aclose()
+
+
+def _advisor_app(calls: list[str]):
+    from chimp.config import AdvisorConfig
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "advisor":
+            calls.append(request.url.path)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "chat-a"}}]})
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "chat-a", "loaded": True}, {"id": "chat-b", "loaded": True}]})
+        payload = json.loads(request.content.decode())
+        return httpx.Response(200, json={"model": payload["model"], "choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("desk", "unsloth", "http://desk", None, 2),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+        advisor=AdvisorConfig(enabled=True, base_url="http://advisor", model="tiny", timeout_seconds=1),
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return build_app(settings, client=upstream)
+
+
+async def test_advisor_is_skipped_when_a_sticky_pin_already_decides():
+    calls: list[str] = []
+    app = _advisor_app(calls)
+    async with app.router.lifespan_context(app):
+        app.state.sticky.remember("sess:s1", "desk", "chat-b")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers={"x-chimp-session": "s1"},
+                json={"model": "auto", "messages": []},
+            )
+    assert response.status_code == 200
+    assert response.headers["x-chimp-model"] == "chat-b"
+    assert response.headers["x-chimp-reason"] == "sticky"
+    assert calls == []
+    assert app.state.sticky.get("sess:s1").model_id == "chat-b"
+
+
+async def test_advisor_still_steers_unpinned_bare_auto():
+    calls: list[str] = []
+    app = _advisor_app(calls)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post("/v1/chat/completions", json={"model": "auto", "messages": []})
+    assert response.status_code == 200
+    assert response.headers["x-chimp-model"] == "chat-a"
+    assert response.headers["x-chimp-reason"] == "warm+advisor"
+    assert calls == ["/v1/chat/completions"]
+
+
+async def test_a_read_timeout_is_not_replayed_on_another_endpoint():
+    hits: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": request.url.host == "warm"}]})
+        hits.append(request.url.host)
+        if request.url.host == "warm":
+            raise httpx.ReadTimeout("upstream is still generating")
+        return httpx.Response(200, json={"choices": []})
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers=_auth(),
+                json={"model": "executor", "messages": []},
+            )
+            assert response.status_code == 502
+            assert response.json()["error"]["code"] == "upstream_failed"
+            assert "warm" not in response.json()["error"]["message"]
+            assert response.headers["x-chimp-endpoint"] == "warm"
+            assert hits == ["warm"]
+            status = await api.get("/status", headers=_auth())
+            inflight = {item["name"]: item["inflight"] for item in status.json()["endpoints"]}
+            assert inflight == {"warm": 0, "cold": 0}
+
+
+async def test_unreachable_upstreams_do_not_leak_addresses():
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": True}]})
+        raise httpx.ConnectError("connect to 10.0.0.7:8888 refused")
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers=_auth(),
+                json={"model": "executor", "messages": []},
+            )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_unavailable"
+    assert "10.0.0.7" not in response.text
+
+
+async def test_cancelling_during_a_context_widen_frees_the_slot():
+    loading = asyncio.Event()
+    never = asyncio.Event()
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v0/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "big",
+                            "type": "llm",
+                            "state": "loaded",
+                            "loaded_context_length": 4096,
+                            "max_context_length": 65536,
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/models/load":
+            loading.set()
+            await never.wait()
+        return httpx.Response(200, json={"choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("studio", "lmstudio", "http://studio", None, 1),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(settings, client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            task = asyncio.create_task(
+                api.post(
+                    "/v1/chat/completions",
+                    json={"model": "auto", "messages": [{"role": "user", "content": "x" * 8000}]},
+                )
+            )
+            await asyncio.wait_for(loading.wait(), timeout=2)
+            assert app.state.gate.inflight["studio"] == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert app.state.gate.inflight["studio"] == 0
+
+
+async def test_an_abandoned_stream_still_frees_the_slot():
+    from chimp.app import _ClosingStream
+
+    closed: list[bool] = []
+
+    async def on_close() -> None:
+        closed.append(True)
+
+    async def body():
+        yield b"data: hi\n\n"
+
+    async def send(_message) -> None:
+        raise OSError("client went away")
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    response = _ClosingStream(body(), on_close, media_type="text/event-stream")
+    with pytest.raises(Exception):  # Starlette may rewrap as ClientDisconnect
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert closed == [True]
+
+
+async def test_cookies_and_chimp_headers_are_not_forwarded_upstream():
+    seen: dict[str, str] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": request.url.host == "warm"}]})
+        seen.update(request.headers)
+        return httpx.Response(200, json={"choices": []})
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    app = build_app(_settings(), client=upstream)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers={
+                    **_auth(),
+                    "cookie": "session=secret",
+                    "x-chimp-session": "s1",
+                    "x-chimp-role": "executor",
+                    "x-forwarded-for": "10.0.0.9",
+                    "openai-beta": "assistants=v2",
+                },
+                json={"model": "executor", "messages": []},
+            )
+    assert response.status_code == 200
+    assert "cookie" not in seen
+    assert not any(key.startswith("x-chimp-") for key in seen)
+    assert "x-forwarded-for" not in seen
+    assert seen["openai-beta"] == "assistants=v2"
+    assert seen["authorization"] == "Bearer upstream-warm"
+
+
+def _cold_then_warm_app(fail: bool = False):
+    state = {"loaded": False, "probes": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            state["probes"] += 1
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": state["loaded"]}]})
+        if fail:
+            return httpx.Response(500, json={"error": {"message": "load failed"}})
+        state["loaded"] = True  # upstream JIT-loads the model to answer
+        return httpx.Response(200, json={"choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("box", "openai", "http://box", None, 1),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return build_app(settings, client=upstream), state
+
+
+async def test_a_cold_load_is_reported_warm_on_the_next_request_without_waiting_for_the_poll():
+    app, state = _cold_then_warm_app()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            body = {"model": "coder", "messages": []}
+            first = await api.post("/v1/chat/completions", json=body)
+            assert first.headers["x-chimp-reason"] == "cold"
+            await asyncio.gather(*app.state.refreshes.values())
+            second = await api.post("/v1/chat/completions", json=body)
+            assert second.headers["x-chimp-reason"] == "warm"
+    assert state["probes"] == 2  # boot + one post-load refresh, not one per request
+
+
+async def test_a_failed_cold_request_does_not_trigger_a_refresh():
+    app, state = _cold_then_warm_app(fail=True)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post("/v1/chat/completions", json={"model": "coder", "messages": []})
+            assert response.status_code == 500
+            assert app.state.refreshes == {}
+    assert state["probes"] == 1

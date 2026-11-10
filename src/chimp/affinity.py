@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -86,7 +87,8 @@ class AffinityCatalog:
 
         effective = hints or ModelHints()
         if self.huggingface_enrich and effective.params_b is None and not effective.tags:
-            fetched = self.lookup_huggingface(model_id)
+            # Cache read only: score() runs inside placement and must never do I/O.
+            fetched = self.cached_hints(model_id)
             if fetched is not None:
                 effective = fetched
 
@@ -123,28 +125,49 @@ class AffinityCatalog:
                 return scores
         return self.default_roles
 
-    def lookup_huggingface(self, model_id: str) -> ModelHints | None:
+    def cached_hints(self, model_id: str) -> ModelHints | None:
         repo = _hf_repo_id(model_id)
-        if not repo:
+        return self._hf_cache.get(repo) if repo else None
+
+    async def prefetch_huggingface(
+        self,
+        client: httpx.AsyncClient,
+        model_ids: list[str],
+        concurrency: int = 4,
+    ) -> int:
+        """Fill the Hugging Face cache for repos not seen yet. Returns how many were fetched."""
+        if not self.huggingface_enrich:
+            return 0
+        repos: list[str] = []
+        for model_id in model_ids:
+            repo = _hf_repo_id(model_id)
+            if repo and repo not in self._hf_cache and repo not in repos:
+                repos.append(repo)
+        if not repos:
+            return 0
+        gate = asyncio.Semaphore(concurrency)
+
+        async def fetch(repo: str) -> None:
+            async with gate:
+                self._hf_cache[repo] = await _fetch_hf_hints(client, repo)
+
+        await asyncio.gather(*(fetch(repo) for repo in repos))
+        return len(repos)
+
+
+async def _fetch_hf_hints(client: httpx.AsyncClient, repo: str) -> ModelHints | None:
+    try:
+        response = await client.get(
+            f"https://huggingface.co/api/models/{repo}",
+            timeout=5.0,
+            follow_redirects=True,
+        )
+        if response.status_code >= 400:
             return None
-        if repo in self._hf_cache:
-            return self._hf_cache[repo]
-        try:
-            response = httpx.get(
-                f"https://huggingface.co/api/models/{repo}",
-                timeout=5.0,
-                follow_redirects=True,
-            )
-            if response.status_code >= 400:
-                self._hf_cache[repo] = None
-                return None
-            hints = _hints_from_hf(response.json())
-        except Exception as exc:  # noqa: BLE001 — enrich is best-effort
-            log.debug("huggingface enrich failed for %s: %s", repo, exc)
-            self._hf_cache[repo] = None
-            return None
-        self._hf_cache[repo] = hints
-        return hints
+        return _hints_from_hf(response.json())
+    except Exception as exc:  # noqa: BLE001 — enrich is best-effort
+        log.debug("huggingface enrich failed for %s: %s", repo, exc)
+        return None
 
 
 def load_affinity(path: Path | None = None, *, huggingface_enrich: bool = False) -> AffinityCatalog:

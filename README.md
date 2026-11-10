@@ -81,13 +81,13 @@ The `model` field is either a role alias (`executor`, `planner`, `auto:coder`, â
 2. If the loaded window is too small on LM Studio, widen that instance before answering.
 3. If loaded state is unknown (a plain OpenAI endpoint), use a free endpoint that lists the model.
 4. Load a matching model on a free endpoint only when nothing suitable is already warm.
-5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub. At boot, live inventory ids are scored once (`enrich_on_start`, skip with `--no-enrich` / `CHIMP_NO_ENRICH=1`); the periodic poll still refreshes reachability only.
+5. Within each step, prefer models with a higher role affinity (packaged `models.yaml`, overridable via `models_path`). Unknown ids get size/name heuristics; optional `huggingface_enrich: true` fills tags/params from the Hub. Those lookups run asynchronously after boot and after each poll, for repos not seen yet, and never during placement, so a slow Hub can't stall requests. A model's first few placements may score without hints. At boot, live inventory ids are scored once (`enrich_on_start`, skip with `--no-enrich` / `CHIMP_NO_ENRICH=1`).
 6. Sticky pins (ADR-0003) reuse the same warm endpoint+model for `prompt_cache_key`, `X-Chimp-Session`, or a stable message-prefix hash while the pin TTL holds and the slot is free.
 7. If every match is busy, return HTTP 429. Chimp does not evict a warm model to satisfy a request that can wait.
 8. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request. Cloud prompt-cache fields on the JSON body are forwarded as-is.
 9. Optional `advisor` (disabled by default) may re-label bare `auto` among legal candidates; explicit `auto:<class>` is never overridden.
 
-Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, `cold`, or `sticky`) say where it went. The JSON body is streamed through unchanged.
+Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, `cold`, or `sticky`) say where it went. After a successful `cold` placement, chimp re-probes that endpoint in the background, so the next request is reported `warm` without waiting for the poll. The JSON body is streamed through unchanged.
 
 ## Endpoints
 
@@ -147,5 +147,5 @@ Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/Agent
 | [`LINKS.md`](LINKS.md) | External research links |
 | [`docs/adr/`](docs/adr/) | Project ADRs |
 
-`GET /ui` is a thin status dashboard over `/status` (endpoints, sticky pins, recent placements). `GET/POST /ui/config` edits the gitignored `config.yaml` bound at startup (restart to apply).
+`GET /ui` is a thin status dashboard over `/status` (endpoints, sticky pins, recent placements). `GET /ui/config` edits the gitignored `config.yaml` bound at startup (restart to apply). The HTML pages themselves need no key; their data calls do. With `api_key` set, open them as `/ui#key=<api_key>`. The key stays in the URL fragment, so it never reaches the server or its logs. Reading and saving config needs a separate `admin_key` (`CHIMP_ADMIN_KEY`, which must differ from `api_key`), opened as `/ui/config#key=<admin_key>`. That way, agents holding the inference key can't rewrite the router. Without `admin_key`, the editor is off. Saves (`POST /ui/config`) accept `text/yaml` only, and a file that fails to load is never saved. The admin key also works everywhere `api_key` does.
 

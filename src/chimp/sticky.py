@@ -20,6 +20,7 @@ class StickyPin:
 class StickyTable:
     ttl_seconds: float = 1800.0
     enabled: bool = True
+    max_pins: int = 4096
     _pins: dict[str, StickyPin] = field(default_factory=dict)
 
     def resolve_key(self, payload: dict[str, Any], headers: Any) -> str | None:
@@ -55,6 +56,12 @@ class StickyTable:
         if not key or not self.enabled:
             return
         clock = time.time() if now is None else now
+        self._pins.pop(key, None)  # re-insert so dict order stays oldest-first
+        if len(self._pins) >= self.max_pins:
+            # Bounded memory even when nobody polls /status: sweep, then evict oldest.
+            self.active(now=clock)
+            while len(self._pins) >= self.max_pins:
+                self._pins.pop(next(iter(self._pins)))
         self._pins[key] = StickyPin(
             key=key,
             endpoint=endpoint,

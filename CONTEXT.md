@@ -29,7 +29,7 @@ Order: **warm → expand → unknown → cold** (then `sticky` when a pin matche
 
 Plain `auto` remains valid (any warm chat). `auto:<class>` only changes affinity ranking among legal candidates. Affinity does not demote broken AWQ builds — pin a known-good id when a peer is bad.
 
-Endpoint kinds: `unsloth`, `lmstudio`, `llamaswap`, `openai`. Status UI: `GET /ui` (and `GET/POST /ui/config` for the bound gitignored file).
+Endpoint kinds: `unsloth`, `lmstudio`, `llamaswap`, `openai`. Status UI: `GET /ui` (and `GET /ui/config` + `GET /ui/config.yaml` / `POST /ui/config` for the bound gitignored file). HTML shells are unauthenticated; data and writes need the bearer key (`#key=` fragment in the browser). Config reads and writes require the separate `admin_key` (must differ from `api_key`; unset = editor off; admin also passes `api_key` checks), accept `text/yaml` only (no form posts, so no drive-by CSRF), and are validated with `load_settings` before an atomic replace. Upstream requests send `accept-encoding: identity` and streams are relayed decoded, because `content-encoding` is not forwarded.
 
 ## Rules
 

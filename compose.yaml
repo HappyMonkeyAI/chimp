@@ -22,6 +22,10 @@ services:
     environment:
       CHIMP_CONFIG: /app/config.yaml
       CHIMP_LOG: ${CHIMP_LOG:-INFO}
+      # Router keys (never commit real values). admin_key opens /ui/config; the
+      # read-only mount below means saves fail until you drop :ro.
+      # CHIMP_API_KEY: ${CHIMP_API_KEY:-}
+      # CHIMP_ADMIN_KEY: ${CHIMP_ADMIN_KEY:-}
       # Optional secondary-tier keys (never commit real values):
       # GROQ_API_KEY: ${GROQ_API_KEY:-}
       # MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}

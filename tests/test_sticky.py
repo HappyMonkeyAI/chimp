@@ -69,3 +69,23 @@ def test_resolve_key_prefers_prompt_cache_key():
     table = StickyTable()
     key = table.resolve_key({"prompt_cache_key": "abc", "messages": [{"role": "user", "content": "hi"}]}, {})
     assert key == "pck:abc"
+
+
+def test_sticky_table_stays_bounded_without_status_polls():
+    table = StickyTable(ttl_seconds=60, max_pins=3)
+    table.remember("old", "laptop", "a", now=0.0)
+    for index in range(10):
+        table.remember(f"k{index}", "laptop", "a", now=100.0 + index)
+    assert len(table._pins) == 3
+    assert table.get("old", now=110.0) is None
+    assert table.get("k9", now=110.0) is not None
+
+
+def test_re_pinning_a_key_refreshes_its_eviction_order():
+    table = StickyTable(ttl_seconds=600, max_pins=2)
+    table.remember("a", "laptop", "m", now=0.0)
+    table.remember("b", "laptop", "m", now=1.0)
+    table.remember("a", "laptop", "m", now=2.0)  # a is now newest
+    table.remember("c", "laptop", "m", now=3.0)  # evicts b, not a
+    assert table.get("a", now=4.0) is not None
+    assert table.get("b", now=4.0) is None
