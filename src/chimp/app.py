@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
+import yaml
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -20,7 +21,7 @@ from starlette.routing import Route
 
 from chimp import __version__
 from chimp.advisor import advise
-from chimp.config import EndpointConfig, Settings
+from chimp.config import ConfigError, EndpointConfig, Settings, load_settings
 from chimp.inventory import Inventory, auth_headers
 from chimp.route import (
     ContextOverflow,
@@ -147,6 +148,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
             Route("/status", _status, methods=["GET"]),
             Route("/ui", _ui, methods=["GET"]),
             Route("/ui/config", _ui_config, methods=["GET", "POST"]),
+            Route("/ui/config.yaml", _ui_config_yaml, methods=["GET"]),
             Route("/v1/models", _models, methods=["GET"]),
             Route("/v1/chat/completions", _proxy, methods=["POST"]),
             Route("/v1/completions", _proxy, methods=["POST"]),
@@ -176,49 +178,75 @@ async def _root(_request: Request) -> JSONResponse:
     )
 
 
-async def _ui(request: Request) -> Response:
-    denied = _authorize(request)
-    if denied is not None:
-        return denied
+async def _ui(_request: Request) -> Response:
+    # Shell only: every byte of data comes from /status, which stays behind auth.
     return Response(status_page_html(), media_type="text/html; charset=utf-8")
 
 
+YAML_TYPES = ("text/yaml", "application/yaml", "application/x-yaml", "text/plain")
+MAX_CONFIG_BYTES = 256 * 1024
+
+
 async def _ui_config(request: Request) -> Response:
+    if request.method == "GET":
+        # Shell only; the YAML itself is fetched from /ui/config.yaml with a bearer token.
+        return HTMLResponse(config_page_html())
     denied = _authorize(request)
     if denied is not None:
         return denied
     settings: Settings = request.app.state.settings
-    path = settings.config_path
-    message = ""
-    error = ""
-    if request.method == "POST":
-        text = (await request.body()).decode("utf-8", errors="replace")
-        content_type = (request.headers.get("content-type") or "").lower()
-        if "application/x-www-form-urlencoded" in content_type and text.startswith("body="):
-            from urllib.parse import parse_qs
-
-            text = parse_qs(text).get("body", [""])[0]
-        if path is None:
-            error = "No config path is bound (started without load_settings path)."
-        else:
-            try:
-                path.write_text(text, encoding="utf-8")
-                message = f"Saved {path}. Restart chimp to apply."
-            except OSError as exc:
-                error = f"Could not write {path}: {exc}"
-    body = ""
-    if path is not None and path.is_file():
-        try:
-            body = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            error = error or f"Could not read {path}: {exc}"
-    return HTMLResponse(
-        config_page_html(
-            path=str(path) if path else "(unset)",
-            body=body,
-            message=message,
-            error=error,
+    if not settings.api_key:
+        return _error(
+            403,
+            "config_write_disabled",
+            "Set api_key in config.yaml to enable writes from /ui/config.",
         )
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type not in YAML_TYPES:
+        # Rejects form posts, which browsers send cross-site without a preflight.
+        return _error(415, "unsupported_media_type", "POST the config as text/yaml.")
+    path = settings.config_path
+    if path is None:
+        return _error(409, "no_config_path", "No config path is bound (started without load_settings path).")
+    raw = await request.body()
+    if len(raw) > MAX_CONFIG_BYTES:
+        return _error(413, "config_too_large", f"Config must be under {MAX_CONFIG_BYTES} bytes.")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return _error(400, "invalid_encoding", "Config must be UTF-8.")
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            load_settings(tmp)
+        except (ConfigError, ValueError, TypeError) as exc:
+            return _error(400, "invalid_config", f"Not saved: {exc}")
+        except yaml.YAMLError as exc:
+            return _error(400, "invalid_config", f"Not saved: YAML did not parse: {exc}")
+        tmp.replace(path)
+    except OSError as exc:
+        return _error(500, "config_write_failed", f"Could not write {path}: {exc}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    return JSONResponse({"saved": str(path), "message": f"Saved {path}. Restart chimp to apply."})
+
+
+async def _ui_config_yaml(request: Request) -> Response:
+    denied = _authorize(request)
+    if denied is not None:
+        return denied
+    path = request.app.state.settings.config_path
+    if path is None or not path.is_file():
+        return _error(404, "no_config_path", "No config file is bound.")
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _error(500, "config_read_failed", f"Could not read {path}: {exc}")
+    return Response(
+        body,
+        media_type="text/yaml; charset=utf-8",
+        headers={"x-chimp-config-path": str(path), "cache-control": "no-store"},
     )
 
 
@@ -390,7 +418,9 @@ async def _proxy(request: Request) -> Response:
     sticky_pin = sticky.get(sticky_key)
     advisor_used = False
 
-    if settings.advisor.enabled and _is_open_auto(requested_text) and purpose == "chat":
+    # A live pin already decides placement; asking the advisor would only risk moving
+    # the conversation off its warm KV cache (ADR-0003).
+    if settings.advisor.enabled and sticky_pin is None and _is_open_auto(requested_text) and purpose == "chat":
         candidates = _live_chat_ids(inventory)
         hint = await advise(client, settings.advisor, payload, candidates)
         if hint:
@@ -574,7 +604,8 @@ async def _dispatch(
 
         return StreamingResponse(replay(), status_code=upstream.status_code, headers=response_headers)
 
-    incoming = upstream.aiter_raw()
+    # Decoded bytes: content-encoding is not forwarded, so raw gzip would reach clients unlabelled.
+    incoming = upstream.aiter_bytes()
     try:
         first = await anext(incoming)
     except StopAsyncIteration:
@@ -698,6 +729,8 @@ def _forward_headers(request: Request, api_key: str | None) -> dict[str, str]:
     headers = {key: value for key, value in request.headers.items() if key.lower() not in HOP_BY_HOP}
     headers.update(auth_headers(api_key))
     headers["content-type"] = "application/json"
+    # We do not forward content-encoding, so ask upstream for plain bytes.
+    headers["accept-encoding"] = "identity"
     return headers
 
 

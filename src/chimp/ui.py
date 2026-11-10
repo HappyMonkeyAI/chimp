@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
-import html
-
 from chimp import __version__
 
 
-def config_page_html(*, path: str, body: str, message: str = "", error: str = "") -> str:
-    note = ""
-    if message:
-        note += f'<p class="ok">{html.escape(message)}</p>'
-    if error:
-        note += f'<p class="bad">{html.escape(error)}</p>'
+# Shared by both pages: the router key travels in the URL fragment (#key=...),
+# which browsers never send to the server or write to access logs.
+_AUTH_JS = """
+    function routerKey() {
+      return new URLSearchParams(location.hash.slice(1)).get("key");
+    }
+    function authHeaders(extra) {
+      const key = routerKey();
+      const headers = Object.assign({}, extra || {});
+      if (key) headers.Authorization = "Bearer " + key;
+      return headers;
+    }
+    function keepKey(link) {
+      if (location.hash) link.href = link.getAttribute("href").split("#")[0] + location.hash;
+    }
+"""
+
+
+def config_page_html() -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,27 +44,52 @@ def config_page_html(*, path: str, body: str, message: str = "", error: str = ""
 </head>
 <body>
   <main>
-    <p><a href="/ui">← status</a></p>
+    <p><a id="back" href="/ui">← status</a></p>
     <h1>config.yaml</h1>
-    <p class="meta">Path: <code>{html.escape(path)}</code>. Saves the gitignored local file. Restart chimp to apply. Do not commit secrets.</p>
-    {note}
-    <form id="cfg" method="post" action="/ui/config">
-      <textarea id="body" name="body" spellcheck="false">{html.escape(body)}</textarea>
+    <p class="meta">Path: <code id="path">…</code>. Saves the gitignored local file after it validates. Restart chimp to apply. Writes need <code>api_key</code> set; open this page as <code>/ui/config#key=…</code>. Do not commit secrets.</p>
+    <p id="note"></p>
+    <form id="cfg">
+      <textarea id="body" spellcheck="false" placeholder="Loading…"></textarea>
       <div><button type="submit">Save</button></div>
     </form>
-    <script>
+    <script>{_AUTH_JS}
+      const note = document.getElementById("note");
+      function show(text, ok) {{
+        note.textContent = text;
+        note.className = ok ? "ok" : "bad";
+      }}
+      async function errorText(res) {{
+        try {{
+          const data = await res.json();
+          return (data.error && data.error.message) || res.statusText;
+        }} catch (_) {{
+          return res.statusText;
+        }}
+      }}
+      async function load() {{
+        const res = await fetch("/ui/config.yaml", {{ headers: authHeaders(), cache: "no-store" }});
+        if (!res.ok) {{
+          show("Could not load config (" + res.status + "): " + await errorText(res), false);
+          return;
+        }}
+        document.getElementById("path").textContent = res.headers.get("x-chimp-config-path") || "(unset)";
+        document.getElementById("body").value = await res.text();
+      }}
       document.getElementById("cfg").addEventListener("submit", async (event) => {{
         event.preventDefault();
-        const text = document.getElementById("body").value;
         const res = await fetch("/ui/config", {{
           method: "POST",
-          headers: {{ "content-type": "text/yaml" }},
-          body: text,
+          headers: authHeaders({{ "content-type": "text/yaml" }}),
+          body: document.getElementById("body").value,
         }});
-        document.open();
-        document.write(await res.text());
-        document.close();
+        if (res.ok) {{
+          show((await res.json()).message, true);
+        }} else {{
+          show("Not saved (" + res.status + "): " + await errorText(res), false);
+        }}
       }});
+      keepKey(document.getElementById("back"));
+      load();
     </script>
   </main>
 </body>
@@ -174,25 +210,21 @@ def status_page_html() -> str:
     </section>
     <section>
       <h2>Config</h2>
-      <p class="meta">Edit gitignored <code>config.yaml</code> at <a href="/ui/config">/ui/config</a> (restart required). Prefer env placeholders for keys.</p>
+      <p class="meta">Edit gitignored <code>config.yaml</code> at <a id="config-link" href="/ui/config">/ui/config</a> (restart required). Prefer env placeholders for keys.</p>
     </section>
   </main>
-  <script>
+  <script>{_AUTH_JS}
     async function load() {{
       const res = await fetch("/status", {{ headers: authHeaders() }});
       if (!res.ok) {{
-        document.getElementById("endpoints").textContent = "Could not load /status (" + res.status + ")";
+        const hint = res.status === 401 ? " — open this page as /ui#key=<api_key>" : "";
+        document.getElementById("endpoints").textContent = "Could not load /status (" + res.status + ")" + hint;
         return;
       }}
       const data = await res.json();
       renderEndpoints(data.endpoints || []);
       renderSticky(data.sticky || []);
       renderRecent(data.recent || []);
-    }}
-    function authHeaders() {{
-      const key = new URLSearchParams(location.search).get("key");
-      if (!key) return {{}};
-      return {{ Authorization: "Bearer " + key }};
     }}
     function renderEndpoints(rows) {{
       if (!rows.length) {{
@@ -254,6 +286,7 @@ def status_page_html() -> str:
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }})[ch]);
     }}
+    keepKey(document.getElementById("config-link"));
     document.getElementById("refresh").addEventListener("click", load);
     load();
     setInterval(load, 5000);

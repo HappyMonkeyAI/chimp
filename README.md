@@ -147,5 +147,5 @@ Thin stubs aligned with [Agents Protocol](https://github.com/HappyMonkeyAI/Agent
 | [`LINKS.md`](LINKS.md) | External research links |
 | [`docs/adr/`](docs/adr/) | Project ADRs |
 
-`GET /ui` is a thin status dashboard over `/status` (endpoints, sticky pins, recent placements). `GET/POST /ui/config` edits the gitignored `config.yaml` bound at startup (restart to apply).
+`GET /ui` is a thin status dashboard over `/status` (endpoints, sticky pins, recent placements). `GET /ui/config` edits the gitignored `config.yaml` bound at startup (restart to apply). The HTML pages themselves need no key; their data calls do. With `api_key` set, open them as `/ui#key=<api_key>`. The key stays in the URL fragment, so it never reaches the server or its logs. Config writes (`POST /ui/config`, `text/yaml` only) are refused unless `api_key` is set, and a file that fails to load is never saved.
 

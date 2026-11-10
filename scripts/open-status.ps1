@@ -17,4 +17,9 @@ try {
     Start-Sleep -Seconds 2
 }
 
-Start-Process "$BaseUrl/ui"
+# The key rides in the URL fragment, which the browser never sends to the server.
+$ui = "$BaseUrl/ui"
+if ($env:CHIMP_API_KEY) {
+    $ui = "$ui#key=$([uri]::EscapeDataString($env:CHIMP_API_KEY))"
+}
+Start-Process $ui

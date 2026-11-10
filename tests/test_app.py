@@ -106,45 +106,120 @@ async def test_ui_and_status_include_sticky(client):
     assert body["advisor"]["enabled"] is False
 
 
-async def test_ui_config_saves_gitignored_yaml(tmp_path, monkeypatch):
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        """
-endpoints:
-  - name: box
-    kind: openai
-    base_url: http://127.0.0.1:9
-""",
-        encoding="utf-8",
-    )
-    from chimp.config import load_settings
+async def test_ui_shell_loads_without_a_header_while_status_stays_locked(client):
+    api, _hold, _started = client
+    ui = await api.get("/ui")
+    assert ui.status_code == 200
+    assert b"location.hash" in ui.content
+    assert (await api.get("/status")).status_code == 401
+    page = await api.get("/ui/config")
+    assert page.status_code == 200
+    assert b"/ui/config.yaml" in page.content
 
-    settings = load_settings(path)
-    settings = Settings(
-        listen_host=settings.listen_host,
-        listen_port=settings.listen_port,
-        api_key=None,
-        poll_interval_seconds=3600,
-        request_timeout_seconds=30,
-        endpoints=settings.endpoints,
-        aliases=settings.aliases,
-        affinity=settings.affinity,
-        config_path=path,
-    )
-    upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
-    app = build_app(settings, client=upstream)
+
+_GOOD_YAML = "endpoints:\n  - name: box\n    kind: openai\n    base_url: http://127.0.0.1:9\n"
+
+
+@pytest.fixture
+async def config_api(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_GOOD_YAML, encoding="utf-8")
+
+    async def make(api_key: str | None):
+        from chimp.config import load_settings
+
+        loaded = load_settings(path)
+        settings = Settings(
+            listen_host=loaded.listen_host,
+            listen_port=loaded.listen_port,
+            api_key=api_key,
+            poll_interval_seconds=3600,
+            request_timeout_seconds=30,
+            endpoints=loaded.endpoints,
+            aliases=loaded.aliases,
+            affinity=loaded.affinity,
+            enrich_on_start=False,
+            config_path=path,
+        )
+        upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []})))
+        app = build_app(settings, client=upstream)
+        return app
+
+    return path, make
+
+
+async def _with_app(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp")
+
+
+async def test_ui_config_saves_valid_yaml_with_the_router_key(config_api):
+    path, make = config_api
+    app = await make("router-secret")
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
-            page = await api.get("/ui/config")
-            assert page.status_code == 200
-            assert b"box" in page.content
+        async with await _with_app(app) as api:
+            raw = await api.get("/ui/config.yaml", headers=_auth())
+            assert raw.status_code == 200
+            assert "box" in raw.text
+            assert (await api.get("/ui/config.yaml")).status_code == 401
+            edited = _GOOD_YAML.replace("box", "edited")
+            denied = await api.post("/ui/config", content=edited, headers={"content-type": "text/yaml"})
+            assert denied.status_code == 401
             saved = await api.post(
                 "/ui/config",
-                content="endpoints:\n  - name: edited\n    kind: openai\n    base_url: http://127.0.0.1:9\n",
-                headers={"content-type": "text/yaml"},
+                content=edited,
+                headers={**_auth(), "content-type": "text/yaml"},
             )
             assert saved.status_code == 200
             assert "edited" in path.read_text(encoding="utf-8")
+    assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
+
+
+async def test_ui_config_refuses_writes_without_a_router_key(config_api):
+    path, make = config_api
+    app = await make(None)
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post(
+                "/ui/config",
+                content=_GOOD_YAML.replace("box", "evil"),
+                headers={"content-type": "text/yaml"},
+            )
+            assert response.status_code == 403
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+async def test_ui_config_rejects_cross_site_form_posts(config_api):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post(
+                "/ui/config",
+                content="body=" + _GOOD_YAML.replace("box", "evil"),
+                headers={**_auth(), "content-type": "application/x-www-form-urlencoded"},
+            )
+            assert response.status_code == 415
+    assert "evil" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "endpoints: [\n",  # YAML syntax
+        "endpoints:\n  - name: box\n    kind: nope\n    base_url: http://x\n",  # ConfigError
+        "endpoints:\n  - name: box\n    kind: openai\n    base_url: http://x\n    max_concurrent: lots\n",  # ValueError
+    ],
+)
+async def test_ui_config_keeps_the_old_file_when_the_new_one_is_invalid(config_api, bad):
+    path, make = config_api
+    app = await make("router-secret")
+    async with app.router.lifespan_context(app):
+        async with await _with_app(app) as api:
+            response = await api.post("/ui/config", content=bad, headers={**_auth(), "content-type": "text/yaml"})
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "invalid_config"
+    assert path.read_text(encoding="utf-8") == _GOOD_YAML
+    assert not any(item.name.endswith(".tmp") for item in path.parent.iterdir())
 
 
 async def test_second_request_cold_loads_when_the_warm_slot_is_held(client):
@@ -293,3 +368,136 @@ async def test_streamed_chunks_reach_the_client_intact():
         server.close()
         await server.wait_closed()
         await upstream.aclose()
+
+
+async def test_gzipped_upstream_stream_reaches_the_client_decoded():
+    import gzip
+
+    seen: dict[str, bytes] = {}
+    sse = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    packed = gzip.compress(sse)
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += await reader.read(4096)
+        head, _, rest = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+            if line.lower().startswith(b"accept-encoding:"):
+                seen["accept-encoding"] = line.split(b":", 1)[1].strip()
+        while len(rest) < length:
+            rest += await reader.read(4096)
+        if head.startswith(b"GET"):
+            payload = b'{"object":"list","data":[{"id":"coder","loaded":true}]}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+        else:
+            # Misbehaving upstream: compresses even when asked for identity.
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Encoding: gzip\r\nContent-Length: "
+                + str(len(packed)).encode()
+                + b"\r\n\r\n"
+                + packed
+            )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    upstream = httpx.AsyncClient()
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("cloud", "openai", f"http://127.0.0.1:{port}", None, 1, "secondary"),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    app = build_app(settings, client=upstream)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+                async with api.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    headers={"accept-encoding": "gzip"},
+                    json={"model": "auto", "stream": True, "messages": []},
+                ) as response:
+                    assert response.status_code == 200
+                    assert "content-encoding" not in response.headers
+                    body = await response.aread()
+        assert body == sse
+        assert seen["accept-encoding"] == b"identity"
+    finally:
+        server.close()
+        await server.wait_closed()
+        await upstream.aclose()
+
+
+def _advisor_app(calls: list[str]):
+    from chimp.config import AdvisorConfig
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "advisor":
+            calls.append(request.url.path)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "chat-a"}}]})
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "chat-a", "loaded": True}, {"id": "chat-b", "loaded": True}]})
+        payload = json.loads(request.content.decode())
+        return httpx.Response(200, json={"model": payload["model"], "choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("desk", "unsloth", "http://desk", None, 2),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+        advisor=AdvisorConfig(enabled=True, base_url="http://advisor", model="tiny", timeout_seconds=1),
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return build_app(settings, client=upstream)
+
+
+async def test_advisor_is_skipped_when_a_sticky_pin_already_decides():
+    calls: list[str] = []
+    app = _advisor_app(calls)
+    async with app.router.lifespan_context(app):
+        app.state.sticky.remember("sess:s1", "desk", "chat-b")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post(
+                "/v1/chat/completions",
+                headers={"x-chimp-session": "s1"},
+                json={"model": "auto", "messages": []},
+            )
+    assert response.status_code == 200
+    assert response.headers["x-chimp-model"] == "chat-b"
+    assert response.headers["x-chimp-reason"] == "sticky"
+    assert calls == []
+    assert app.state.sticky.get("sess:s1").model_id == "chat-b"
+
+
+async def test_advisor_still_steers_unpinned_bare_auto():
+    calls: list[str] = []
+    app = _advisor_app(calls)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post("/v1/chat/completions", json={"model": "auto", "messages": []})
+    assert response.status_code == 200
+    assert response.headers["x-chimp-model"] == "chat-a"
+    assert response.headers["x-chimp-reason"] == "warm+advisor"
+    assert calls == ["/v1/chat/completions"]
