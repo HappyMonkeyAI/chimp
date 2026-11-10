@@ -659,3 +659,53 @@ async def test_cookies_and_chimp_headers_are_not_forwarded_upstream():
     assert "x-forwarded-for" not in seen
     assert seen["openai-beta"] == "assistants=v2"
     assert seen["authorization"] == "Bearer upstream-warm"
+
+
+def _cold_then_warm_app(fail: bool = False):
+    state = {"loaded": False, "probes": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            state["probes"] += 1
+            return httpx.Response(200, json={"data": [{"id": "coder", "loaded": state["loaded"]}]})
+        if fail:
+            return httpx.Response(500, json={"error": {"message": "load failed"}})
+        state["loaded"] = True  # upstream JIT-loads the model to answer
+        return httpx.Response(200, json={"choices": []})
+
+    settings = Settings(
+        listen_host="127.0.0.1",
+        listen_port=8787,
+        api_key=None,
+        poll_interval_seconds=3600,
+        request_timeout_seconds=30,
+        endpoints=(EndpointConfig("box", "openai", "http://box", None, 1),),
+        aliases={"auto": AliasConfig("auto", ())},
+        affinity=load_affinity(huggingface_enrich=False),
+        enrich_on_start=False,
+    )
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return build_app(settings, client=upstream), state
+
+
+async def test_a_cold_load_is_reported_warm_on_the_next_request_without_waiting_for_the_poll():
+    app, state = _cold_then_warm_app()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            body = {"model": "coder", "messages": []}
+            first = await api.post("/v1/chat/completions", json=body)
+            assert first.headers["x-chimp-reason"] == "cold"
+            await asyncio.gather(*app.state.refreshes.values())
+            second = await api.post("/v1/chat/completions", json=body)
+            assert second.headers["x-chimp-reason"] == "warm"
+    assert state["probes"] == 2  # boot + one post-load refresh, not one per request
+
+
+async def test_a_failed_cold_request_does_not_trigger_a_refresh():
+    app, state = _cold_then_warm_app(fail=True)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chimp") as api:
+            response = await api.post("/v1/chat/completions", json={"model": "coder", "messages": []})
+            assert response.status_code == 500
+            assert app.state.refreshes == {}
+    assert state["probes"] == 1

@@ -122,6 +122,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     gate = Gate()
     decisions: deque[dict[str, Any]] = deque(maxlen=50)
     sticky = StickyTable(ttl_seconds=settings.sticky_ttl_seconds, enabled=settings.sticky)
+    refreshes: dict[str, asyncio.Task[None]] = {}
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
@@ -145,8 +146,14 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         finally:
             stop.set()
             task.cancel()
+            pending = list(refreshes.values())
+            for item in pending:
+                item.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            for item in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await item
             if owns_client:
                 await client.aclose()
 
@@ -172,7 +179,25 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     app.state.gate = gate
     app.state.decisions = decisions
     app.state.sticky = sticky
+    app.state.refreshes = refreshes
     return app
+
+
+def _refresh_soon(app: Starlette, endpoint: EndpointConfig) -> None:
+    """Re-probe one endpoint in the background after a cold load, so the next
+    placement sees the model as warm instead of waiting for the poll."""
+    pending: dict[str, asyncio.Task[None]] = app.state.refreshes
+    if endpoint.name in pending:
+        return
+    inventory: Inventory = app.state.inventory
+
+    async def run() -> None:
+        try:
+            await inventory.remember(await inventory.probe(endpoint))
+        finally:
+            pending.pop(endpoint.name, None)
+
+    pending[endpoint.name] = asyncio.create_task(run())
 
 
 async def _root(_request: Request) -> JSONResponse:
@@ -512,7 +537,11 @@ async def _proxy(request: Request) -> Response:
             sticky_key or "-",
         )
         try:
-            return await _dispatch(request, client, gate, placement, payload, reason=reason)
+            response = await _dispatch(request, client, gate, placement, payload, reason=reason)
+            if placement.reason == "cold" and response.status_code < 400:
+                # Headers arrived, so the upstream has finished loading the model.
+                _refresh_soon(request.app, placement.endpoint)
+            return response
         except ContextOverflow as overflow:
             if await _retry_wider(client, inventory, placement, overflow.tokens, widened):
                 needed = max(needed, overflow.tokens)

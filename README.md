@@ -87,7 +87,7 @@ The `model` field is either a role alias (`executor`, `planner`, `auto:coder`, â
 8. Endpoints with `tier: secondary` (free cloud APIs) are used only when no primary endpoint can take the request. Cloud prompt-cache fields on the JSON body are forwarded as-is.
 9. Optional `advisor` (disabled by default) may re-label bare `auto` among legal candidates; explicit `auto:<class>` is never overridden.
 
-Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, `cold`, or `sticky`) say where it went. The JSON body is streamed through unchanged.
+Response headers `x-chimp-endpoint`, `x-chimp-model`, and `x-chimp-reason` (`warm`, `expand`, `unknown`, `cold`, or `sticky`) say where it went. After a successful `cold` placement, chimp re-probes that endpoint in the background, so the next request is reported `warm` without waiting for the poll. The JSON body is streamed through unchanged.
 
 ## Endpoints
 

@@ -82,6 +82,7 @@ Prefer web dashboard over Electron — shipped as `/ui`.
 | R6 | HF enrich off the placement path (no sync `httpx.get` under the gate lock) | `place()` does no I/O | M | done |
 | R7 | Release inflight slot on `CancelledError` between acquire and dispatch | Unit test: cancelled widen leaves inflight 0 | S | done |
 | R8 | Small fixes: sticky expiry sweep, parallel probes, `x or default` config zeros, strip cookie + `x-chimp-*` + forwarding headers upstream (denylist, all tiers), drop `is_stream_consumed` branch | Per-item tests | M | done |
+| R9 | Re-probe an endpoint after a successful cold load | Unit test + live LM Studio: `cold` then `warm` with no poll between | S | done |
 
 ## Backlog (do not start until Waves 1–3 earn their keep)
 
